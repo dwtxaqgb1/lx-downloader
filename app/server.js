@@ -146,22 +146,37 @@ function saveSources() {
 function loadSource(code, filename, enabled = true) {
   const handlers = {};
   const srcList = {};
+  // callback风格request: request(url, opts, (err, resp) => {})
+  function request(url, opts, callback) {
+    if (typeof opts === 'function') { callback = opts; opts = {}; }
+    opts = opts || {};
+    console.log('lx.request:', url);
+    fetch(url, {
+      method: opts.method || 'GET',
+      headers: { ...(opts.headers || {}), 'User-Agent': 'Mozilla/5.0' },
+      body: opts.body || opts.data
+    }).then(async r => {
+      const text = await r.text();
+      if (url.includes('gdstudio')) console.log('gdstudio resp:', text.substring(0, 200));
+      callback(null, { status: r.status, headers: {}, body: text });
+    }).catch(e => callback(e));
+  }
+  const enProxy = new Proxy({}, { get(t,p){return p;} });
   const lx = {
-    on(e, h) { if (e === 'request') handlers.request = h; },
-    send(e, d) { if (d && d.sources) Object.assign(srcList, d.sources); },
-    log() {}, setCache() {}, getCache() { return null; },
-    async request(url, opts = {}) {
-      const o = typeof opts === 'string' ? { method: opts } : opts;
-      const r = await fetch(url, {
-        method: o.method || 'GET',
-        headers: { ...(o.headers || {}), 'User-Agent': 'Mozilla/5.0' },
-        body: o.body || o.data
-      });
-      return { status: r.status, headers: {}, body: await r.text() };
-    }
+    EVENT_NAMES: enProxy,
+    on: (e, h) => { if (e === 'request') handlers.request = h; },
+    send: (e, d) => { if (d && d.sources) Object.assign(srcList, d.sources); },
+    request,
+    log: () => {}, setCache: () => {}, getCache: () => null
   };
-  const EVENT_NAMES = new Proxy({}, { get(t, p) { return p; } });
-  const sandbox = { console, setTimeout, clearTimeout, Promise, JSON, Math, URL, URLSearchParams, fetch: lx.request, EVENT_NAMES, lx: { EVENT_NAMES, on: lx.on, send: lx.send, request: lx.request, log: lx.log, setCache: lx.setCache, getCache: lx.getCache } };
+  const sandbox = {
+    console, setTimeout, clearTimeout, setInterval, clearTimeout,
+    Promise, JSON, Math, URL, URLSearchParams, Buffer,
+    EVENT_NAMES: enProxy,
+    on: lx.on, send: lx.send, request, log: lx.log,
+    lx
+  };
+  sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(code, sandbox);
   const id = ++sourceIdSeq;
@@ -208,6 +223,20 @@ async function sourceSearch(keyword, quality = '128k') {
   return null;
 }
 
+// gdstudio API获取flac
+async function gdstudioFlac(songId, quality) {
+  try {
+    const br = quality === 'flac' ? 740 : (quality === '320k' ? 320 : 128);
+    const r = await fetch(`https://music-api.gdstudio.xyz/api.php?use_xbridge3=true&loader_name=forest&need_sec_link=1&sec_link_scene=im&theme=light&types=url&source=netease&id=${songId}&br=${br}`);
+    const d = await r.json();
+    if (d.url && d.size > 0) {
+      console.log('gdstudio OK:', songId, 'br=' + d.br, 'size=' + (d.size/1024/1024).toFixed(1) + 'MB');
+      return d.url;
+    }
+  } catch(e) { console.log('gdstudio error:', e.message); }
+  return null;
+}
+
 // 用音源获取播放链接（优先wy网易云，因为音源wy支持最好）
 async function sourceGetUrlByPlatform(song, quality) {
   // 确保用网易云id查：如果不是163平台，先搜163
@@ -219,7 +248,13 @@ async function sourceGetUrlByPlatform(song, quality) {
       if (w163.length) { songId = w163[0].id; platform = '163'; }
     } catch(e) { console.log('search163 error:', e.message); }
   }
-  console.log('lookup:', song.title, 'id=' + songId);
+  console.log('lookup:', song.title, 'id=' + songId, 'quality=' + quality);
+
+  // 如果是flac音质，优先直接用gdstudio获取flac
+  if (quality === 'flac') {
+    const flacUrl = await gdstudioFlac(songId, quality);
+    if (flacUrl) return flacUrl;
+  }
 
   // 优先用音源JS
   const trySources = ['wy', 'tx', 'kw', 'kg', 'mg'];
@@ -239,29 +274,24 @@ async function sourceGetUrlByPlatform(song, quality) {
             source: srcId,
             info: {
               musicInfo: { id: String(songId), name: song.title, singer: song.artist || '' },
-              quality: quality
+              quality: quality,
+              type: quality
             }
           }, resp);
           if (ret && typeof ret.then === 'function') {
             ret.then(d => { if(!done){done=true; resolve(d);} }).catch(e => { if(!done){done=true; reject(e);} });
           }
-          setTimeout(() => { if(!done){done=true; reject(new Error('timeout'));} }, 10000);
+          setTimeout(() => { if(!done){done=true; reject(new Error('timeout'));} }, 15000);
         });
-        if (result && result.url) { console.log('source OK:', srcId, song.title); return result.url; }
+        if (result) {
+          const url = typeof result === 'string' ? result : result.url;
+          if (url) { console.log('source OK:', srcId, song.title); return url; }
+        }
       } catch(e) { console.log('source error:', srcId, e.message); }
     }
   }
 
-  // fallback: oiapi.net
-  try {
-    const r = await fetch(`https://oiapi.net/api/Music_163?id=${songId}`);
-    const d = await r.json();
-    if (d.code === 0 && d.data && (d.data.url || (Array.isArray(d.data) && d.data[0] && d.data[0].url))) {
-      const url = d.data.url || d.data[0].url;
-      console.log('oiapi OK:', song.title);
-      return url;
-    }
-  } catch(e) { console.log('oiapi error:', e.message); }
+  console.log('no source found:', song.title);
   return null;
 }
 
@@ -269,7 +299,7 @@ function restoreSources() {
   if (!fs.existsSync(SOURCES_FILE)) return;
   try {
     const data = JSON.parse(fs.readFileSync(SOURCES_FILE, 'utf8'));
-    for (const item of data) { try { loadSource(item.code, item.name, item.enabled); } catch(e) {} }
+    for (const item of data) { try { loadSource(item.code, item.name, item.enabled); } catch(e) { console.log('load source error:', item.name, e.message); } }
   } catch(e) {}
 }
 
@@ -294,7 +324,15 @@ async function searchQQ(keyword) {
 async function search163(keyword) {
   const resp = await fetch(`https://music.163.com/api/cloudsearch/pc?s=${encodeURIComponent(keyword)}&type=1&offset=0&limit=20`, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://music.163.com/' } });
   const data = await resp.json();
-  return (data.result?.songs || []).map(s => ({ platform: '163', id: s.id, title: s.name, artist: (s.ar || []).map(a => a.name).join(' / '), album: s.al?.name || '' }));
+  return (data.result?.songs || []).map(s => {
+    const sizeBytes = (s.l && s.l.size) || (s.m && s.m.size) || (s.h && s.h.size) || 0;
+    return {
+      platform: '163', id: s.id, title: s.name,
+      artist: (s.ar || []).map(a => a.name).join(' / '),
+      album: s.al?.name || '',
+      sizeMB: sizeBytes ? (sizeBytes / 1024 / 1024).toFixed(1) : ''
+    };
+  });
 }
 
 async function searchPlatform(platform, keyword) {
@@ -307,7 +345,10 @@ async function getTopList(listId) {
   const url = (apiConfig.wyToplist || defaultConfig.wyToplist).replace('{id}', listId);
   const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://music.163.com/' } });
   const data = await resp.json();
-  return (data.result?.tracks || []).slice(0, 50).map(s => ({ platform: '163', id: s.id, title: s.name, artist: (s.artists || s.ar || []).map(a => a.name).join(' / '), album: s.album?.name || s.al?.name || '' }));
+  return (data.result?.tracks || []).slice(0, 50).map(s => {
+    const sizeBytes = (s.l && s.l.size) || (s.m && s.m.size) || (s.h && s.h.size) || 0;
+    return { platform: '163', id: s.id, title: s.name, artist: (s.artists || s.ar || []).map(a => a.name).join(' / '), album: s.album?.name || s.al?.name || '', sizeMB: sizeBytes ? (sizeBytes / 1024 / 1024).toFixed(1) : '' };
+  });
 }
 
 // 试听：根据歌名歌手找播放链接，按相似度匹配
@@ -529,9 +570,9 @@ let taskId = 0;
 // 本地下载：302重定向到直链，浏览器直接从源站下载，不消耗服务器流量
 app.get('/api/dl', checkAuth, async (req, res) => {
   try {
-    const { title, artist, id, platform } = req.query;
+    const { title, artist, id, platform, quality } = req.query;
     const song = { title: title || '', artist: artist || '', id, platform };
-    const url = await sourceGetUrlByPlatform(song, '320k');
+    const url = await sourceGetUrlByPlatform(song, quality || '320k');
     if (!url) return res.status(404).send('未找到歌曲链接');
     res.redirect(url);
   } catch(e) { res.status(500).send(e.message); }
@@ -539,36 +580,35 @@ app.get('/api/dl', checkAuth, async (req, res) => {
 
 app.post('/api/local-url', checkAuth, async (req, res) => {
   try {
-    const { song } = req.body;
+    const { song, quality } = req.body;
     if (!song) return res.status(400).json({ error: 'song不能为空' });
-    const url = await sourceGetUrlByPlatform(song, '320k');
+    const url = await sourceGetUrlByPlatform(song, quality || '320k');
     if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
     res.json({ ok: true, url });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// 本地下载：代理下载，强制浏览器下载文件
 app.post('/api/local-download', checkAuth, async (req, res) => {
   try {
-    const { song } = req.body;
+    const { song, quality } = req.body;
     if (!song) return res.status(400).json({ error: 'song不能为空' });
-    const url = await sourceGetUrlByPlatform(song, '320k');
+    const url = await sourceGetUrlByPlatform(song, quality || '320k');
     if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
     const title = (song.title || song.name || 'song').replace(/[\\\/:*?"<>|]/g, '_');
     const artist = (song.artist || '').replace(/[\\\/:*?"<>|]/g, '_');
-    const filename = encodeURIComponent(title + ' - ' + artist + '.mp3');
     const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     const buf = Buffer.from(await r.arrayBuffer());
+    const urlExt = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
+    const filename = encodeURIComponent(title + ' - ' + artist + '.' + urlExt);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
-    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Type', urlExt === 'flac' ? 'audio/flac' : 'audio/mpeg');
     res.send(buf);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// 本地下载：打包成zip一次下载
 app.post('/api/local-zip', checkAuth, async (req, res) => {
   try {
-    const { songs } = req.body;
+    const { songs, quality } = req.body;
     if (!songs || !songs.length) return res.status(400).json({ error: 'songs不能为空' });
     const archiver = require('archiver');
     const archive = archiver('zip', { zlib: { level: 5 } });
@@ -578,13 +618,14 @@ app.post('/api/local-zip', checkAuth, async (req, res) => {
     const usedNames = {};
     for (const song of songs) {
       try {
-        const url = await sourceGetUrlByPlatform(song, '320k');
+        const url = await sourceGetUrlByPlatform(song, quality || '320k');
         if (!url) continue;
+        const urlExt = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
         let name = ((song.title || song.name) + ' - ' + (song.artist || '')).replace(/[\\\/:*?"<>|]/g, '_') || 'song';
         if (usedNames[name]) { name = name + ' (' + (++usedNames[name]) + ')'; } else { usedNames[name] = 1; }
         const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         const buf = Buffer.from(await r.arrayBuffer());
-        archive.append(buf, { name: name + '.mp3' });
+        archive.append(buf, { name: name + '.' + urlExt });
       } catch(e) { console.log('zip skip:', song.title, e.message); }
     }
     await archive.finalize();
@@ -592,11 +633,23 @@ app.post('/api/local-zip', checkAuth, async (req, res) => {
 });
 
 app.post('/api/download', requireDownload, async (req, res) => {
-  const { songs, quality } = req.body;
+  const { songs, quality, type } = req.body;
+  const dlType = type || 'nas';
   const id = ++taskId;
-  const items = songs.map(s => ({ title: s.title || s.name, artist: s.artist, status: '排队中' }));
-  tasks.set(id, { total: songs.length, done: 0, status: 'running', items, cancelled: false, paused: false });
-  res.json({ taskId: id, total: songs.length, done: 0, status: 'running', items });
+  // 去重：已有任务中相同歌曲跳过
+  const existing = new Set();
+  for (const [, t] of tasks) {
+    if (t.status === 'running' || t.status === 'paused') {
+      for (const it of t.items) {
+        if (it.status !== '完成' && it.status !== '失败') existing.add(it.title + '|' + (it.artist||''));
+      }
+    }
+  }
+  const newSongs = songs.filter(s => !existing.has((s.title||s.name)+'|'+(s.artist||'')));
+  if (!newSongs.length) return res.json({ taskId: id, total: 0, done: 0, status: 'done', items: [], skipped: songs.length });
+  const items = newSongs.map(s => ({ title: s.title || s.name, artist: s.artist, status: '排队中' }));
+  tasks.set(id, { total: newSongs.length, done: 0, status: 'running', items, cancelled: false, paused: false, type: dlType });
+  res.json({ taskId: id, total: newSongs.length, done: 0, status: 'running', items });
 
   (async () => {
     const concurrency = 3;
@@ -610,42 +663,63 @@ app.post('/api/download', requireDownload, async (req, res) => {
       const rawTitle = song.title || '';
       const cleanTitle = rawTitle.replace(/[（(].*?[)）]/g, '').trim();
       let musicUrl = null;
-
-      // 1. 多平台搜索得到最佳匹配
-      const keywords = [cleanTitle + ' ' + (song.artist || ''), rawTitle + ' ' + (song.artist || ''), cleanTitle, rawTitle];
-      const platforms = ['163', 'qq'];
       let bestSong = null;
-      for (const kw of keywords) {
-        if (task.cancelled) return;
-        for (const plat of platforms) {
+
+      // 如果song已有id（从搜索/排行榜来的），直接用
+      if (song.id && song.platform === '163') {
+        bestSong = { platform: '163', id: song.id, title: rawTitle, artist: song.artist || '' };
+      } else {
+        const keywords = [cleanTitle + ' ' + (song.artist || ''), rawTitle + ' ' + (song.artist || ''), cleanTitle, rawTitle];
+        const platforms = ['163', 'qq'];
+        for (const kw of keywords) {
           if (task.cancelled) return;
-          items[i].status = `搜索中(${plat})`;
-          try {
-            const results = await searchPlatform(plat, kw);
-            for (const r of results) {
-              const s = scoreSong(r, rawTitle, song.artist || '');
-              if (s >= 100) { bestSong = r; break; }
-            }
-            if (bestSong) break;
-          } catch(e) {}
+          for (const plat of platforms) {
+            if (task.cancelled) return;
+            items[i].status = `搜索中(${plat})`;
+            try {
+              const results = await searchPlatform(plat, kw);
+              for (const r of results) {
+                const s = scoreSong(r, rawTitle, song.artist || '');
+                if (s >= 100) { bestSong = r; break; }
+              }
+              if (bestSong) break;
+            } catch(e) {}
+          }
+          if (bestSong) break;
         }
-        if (bestSong) break;
       }
 
-      // 2. 用音源获取完整链接
       if (bestSong) {
         items[i].status = '音源获取链接';
         musicUrl = await sourceGetUrlByPlatform(bestSong, quality);
       }
 
       if (!musicUrl) { items[i].status = '音源未找到'; task.done++; return; }
-      items[i].status = '下载中';
       try {
-        const filename = `${song.artist || '未知'}-${rawTitle}.mp3`.replace(/[\/\\:*?"<>|]/g, '_');
-        const resp = await fetch(musicUrl);
-        const buf = Buffer.from(await resp.arrayBuffer());
-        fs.writeFileSync(path.join(DOWNLOAD_DIR, filename), buf);
-        items[i].status = '完成';
+        const urlExt = (musicUrl.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
+        if (dlType === 'local') {
+          items[i].url = musicUrl;
+          items[i].filename = `${song.artist || '未知'}-${rawTitle}.${urlExt}`.replace(/[\/\\:*?"<>|]/g, '_');
+          items[i].format = urlExt;
+          items[i].status = '完成';
+        } else {
+          items[i].status = '下载中';
+          const resp = await fetch(musicUrl);
+          const buf = Buffer.from(await resp.arrayBuffer());
+          const ct = resp.headers.get('content-type') || '';
+          let ext = 'mp3';
+          if (urlExt === 'flac' || ct.includes('flac')) ext = 'flac';
+          else if (urlExt === 'wav' || ct.includes('wav')) ext = 'wav';
+          else if (urlExt === 'm4a' || ct.includes('m4a') || ct.includes('mp4')) ext = 'm4a';
+          else if (urlExt === 'ape' || ct.includes('ape')) ext = 'ape';
+          const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
+          const safeName = `${song.artist || '未知'}-${rawTitle}`.replace(/[\/\\:*?"<>|]/g, '_');
+          const filename = safeName + '.' + ext;
+          fs.writeFileSync(path.join(DOWNLOAD_DIR, filename), buf);
+          items[i].format = ext;
+          items[i].sizeMB = sizeMB;
+          items[i].status = '完成';
+        }
       } catch(e) { items[i].status = '失败'; }
       task.done++;
     }
@@ -653,14 +727,38 @@ app.post('/api/download', requireDownload, async (req, res) => {
     async function worker() {
       while (true) {
         const i = idx++;
-        if (i >= songs.length) break;
-        await downloadOne(songs[i], i);
+        if (i >= newSongs.length) break;
+        await downloadOne(newSongs[i], i);
       }
     }
-    await Promise.all(Array(Math.min(concurrency, songs.length)).fill(null).map(worker));
+    await Promise.all(Array(Math.min(concurrency, newSongs.length)).fill(null).map(worker));
     const t = tasks.get(id);
-    if (t && !t.cancelled) t.status = 'done';
+    if (t && !t.cancelled) {
+      t.status = 'done';
+      // NAS类型完成后自动写历史
+      if (dlType !== 'local') {
+        t.items.forEach(function(item){
+          if(item.status==='完成'){
+            downloadHistory.push({title:item.title, artist:item.artist||'', format:item.format||'', sizeMB:item.sizeMB||'', time:Date.now()});
+          }
+        });
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify(downloadHistory));
+      }
+    }
   })();
+});
+
+// 本地下载：获取单个已下载文件
+app.get('/api/download-file/:taskId/:idx', checkAuth, (req, res) => {
+  const task = tasks.get(parseInt(req.params.taskId));
+  if (!task) return res.status(404).json({ error: 'not found' });
+  const item = task.items[parseInt(req.params.idx)];
+  if (!item || !item.filePath || !fs.existsSync(item.filePath)) return res.status(404).json({ error: 'file not found' });
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.filename || 'song.mp3')}`);
+  res.setHeader('Content-Type', item.format === 'flac' ? 'audio/flac' : 'audio/mpeg');
+  const stream = fs.createReadStream(item.filePath);
+  stream.pipe(res);
+  stream.on('end', () => { try { fs.unlinkSync(item.filePath); } catch(e){} });
 });
 
 app.get('/api/download/:id', (req, res) => {
