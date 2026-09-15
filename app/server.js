@@ -216,29 +216,13 @@ async function sourceGetUrlByPlatform(song, quality) {
   if (platform !== '163') {
     try {
       const w163 = await search163(song.title + ' ' + (song.artist || ''));
-      console.log('search163 found:', w163.length, 'for', song.title);
-      if (w163.length) {
-        songId = w163[0].id;
-        platform = '163';
-      }
+      if (w163.length) { songId = w163[0].id; platform = '163'; }
     } catch(e) { console.log('search163 error:', e.message); }
   }
-  console.log('wy lookup:', song.title, 'id=' + songId, 'platform=' + platform);
+  console.log('lookup:', song.title, 'id=' + songId);
 
-  // 直接用oiapi.net查网易云链接（NAS能访问）
-  try {
-    const r = await fetch(`https://oiapi.net/api/Music_163?id=${songId}`);
-    const d = await r.json();
-    console.log('oiapi resp:', d.code, Array.isArray(d.data) && d.data[0] && d.data[0].url ? 'has url' : 'no url');
-    if (d.code === 0 && d.data && (d.data.url || (Array.isArray(d.data) && d.data[0] && d.data[0].url))) {
-      const url = d.data.url || d.data[0].url;
-      console.log('wy OK:', song.title, '->', songId);
-      return url;
-    }
-  } catch(e) { console.log('wy error:', e.message); }
-
-  // fallback: 音源JS
-  const trySources = ['wy', 'tx', 'kw'];
+  // 优先用音源JS
+  const trySources = ['wy', 'tx', 'kw', 'kg', 'mg'];
   for (const srcId of trySources) {
     for (const [sid, s] of sources) {
       if (!s.enabled || !s.handler) continue;
@@ -264,9 +248,20 @@ async function sourceGetUrlByPlatform(song, quality) {
           setTimeout(() => { if(!done){done=true; reject(new Error('timeout'));} }, 10000);
         });
         if (result && result.url) { console.log('source OK:', srcId, song.title); return result.url; }
-      } catch(e) { console.log('source error:', srcId, song.title, e.message); }
+      } catch(e) { console.log('source error:', srcId, e.message); }
     }
   }
+
+  // fallback: oiapi.net
+  try {
+    const r = await fetch(`https://oiapi.net/api/Music_163?id=${songId}`);
+    const d = await r.json();
+    if (d.code === 0 && d.data && (d.data.url || (Array.isArray(d.data) && d.data[0] && d.data[0].url))) {
+      const url = d.data.url || d.data[0].url;
+      console.log('oiapi OK:', song.title);
+      return url;
+    }
+  } catch(e) { console.log('oiapi error:', e.message); }
   return null;
 }
 
