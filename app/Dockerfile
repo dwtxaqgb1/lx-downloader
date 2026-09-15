@@ -4,5 +4,5 @@ COPY package.json .
 RUN npm install --production
 COPY server.js .
 COPY public ./public
-EXPOSE 9527
+EXPOSE 5200
 CMD ["node", "server.js"]

@@ -4,14 +4,106 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/downloads';
+const PORT = process.env.PORT || 5200;
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
 
-const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/downloads';
-const PORT = process.env.PORT || 9527;
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+// 认证
+const AUTH_FILE = path.join(DOWNLOAD_DIR, 'auth.json');
+let authData = {
+  users: [{ user: 'admin', pass: 'admin', role: 'admin' }],
+  sessions: {}  // token -> user
+};
+if (fs.existsSync(AUTH_FILE)) {
+  try { authData = { ...authData, ...JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')) }; } catch {}
+}
+function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData)); }
+
+app.post('/api/login', (req, res) => {
+  const { user, pass } = req.body;
+  const u = authData.users.find(x => x.user === user && x.pass === pass);
+  if (u) {
+    const token = require('crypto').randomBytes(16).toString('hex');
+    authData.sessions[token] = user;
+    saveAuth();
+    res.json({ ok: true, token, role: u.role, user, canDownload: u.canDownload || false });
+  } else {
+    res.status(401).json({ ok: false, msg: '用户名或密码错误' });
+  }
+});
+
+function getUser(req) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  const user = authData.sessions[token];
+  return authData.users.find(x => x.user === user);
+}
+
+function checkAuth(req, res, next) {
+  if (req.path === '/api/login' || req.path === '/' || req.path === '/login.html') return next();
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (authData.sessions[token]) return next();
+  return res.status(401).json({ error: 'unauthorized' });
+}
+
+function requireAdmin(req, res, next) {
+  const u = getUser(req);
+  if (u && u.role === 'admin') return next();
+  return res.status(403).json({ error: '无权限' });
+}
+
+function requireDownload(req, res, next) {
+  const u = getUser(req);
+  if (u && u.role === 'admin') return next();
+  return res.status(403).json({ error: '仅管理员可下载到NAS' });
+}
+
+app.post('/api/change-auth', checkAuth, requireAdmin, (req, res) => {
+  const { user, pass } = req.body;
+  const admin = authData.users.find(x => x.role === 'admin');
+  if (admin) {
+    if (user) admin.user = user;
+    if (pass) admin.pass = pass;
+  }
+  saveAuth();
+  res.json({ ok: true });
+});
+
+app.get('/api/users', checkAuth, requireAdmin, (req, res) => {
+  res.json({ users: authData.users.map(u => ({ user: u.user, role: u.role, canDownload: u.canDownload || false })) });
+});
+
+app.post('/api/users', checkAuth, requireAdmin, (req, res) => {
+  const { user, pass, role, canDownload } = req.body;
+  if (!user || !pass) return res.status(400).json({ error: '用户名密码不能为空' });
+  if (authData.users.find(x => x.user === user)) return res.status(400).json({ error: '用户已存在' });
+  authData.users.push({ user, pass, role: role || 'guest', canDownload: canDownload || false });
+  saveAuth();
+  res.json({ ok: true });
+});
+
+app.put('/api/users/:user', checkAuth, requireAdmin, (req, res) => {
+  const u = authData.users.find(x => x.user === req.params.user);
+  if (!u) return res.status(404).json({ error: '用户不存在' });
+  if (req.body.canDownload !== undefined) u.canDownload = req.body.canDownload;
+  if (req.body.pass) u.pass = req.body.pass;
+  saveAuth();
+  res.json({ ok: true });
+});
+
+app.delete('/api/users/:user', checkAuth, requireAdmin, (req, res) => {
+  const u = req.params.user;
+  if (u === 'admin') return res.status(400).json({ error: '不能删除管理员' });
+  authData.users = authData.users.filter(x => x.user !== u);
+  saveAuth();
+  res.json({ ok: true });
+});
+
+app.use(checkAuth);
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ===== 多音源管理 =====
 const SOURCES_FILE = path.join(DOWNLOAD_DIR, 'sources.json');
@@ -413,6 +505,21 @@ app.post('/api/playlists', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/playlists/:name/songs', (req, res) => {
+  const safeName = req.params.name.replace(/[\/\\:*?"<>|]/g, '_');
+  const fp = path.join(PLAYLIST_DIR, safeName + '.json');
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: '歌单不存在' });
+  const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+  const songs = data.songs || data;
+  req.body.songs.forEach(s => {
+    if (!songs.find(x => (x.title||x.name) === (s.title||s.name) && (x.artist||'') === (s.artist||''))) {
+      songs.push({ title: s.title||s.name, artist: s.artist||'' });
+    }
+  });
+  fs.writeFileSync(fp, JSON.stringify({ songs }));
+  res.json({ ok: true });
+});
+
 app.delete('/api/playlists/:name', (req, res) => {
   const safeName = req.params.name.replace(/[\/\\:*?"<>|]/g, '_');
   try { fs.unlinkSync(path.join(PLAYLIST_DIR, safeName + '.json')); } catch(e) {}
@@ -423,7 +530,73 @@ app.delete('/api/playlists/:name', (req, res) => {
 const tasks = new Map();
 let taskId = 0;
 
-app.post('/api/download', async (req, res) => {
+// 本地下载：返回302重定向到直链，浏览器直接从源站下载，不消耗服务器流量
+// 本地下载：302重定向到直链，浏览器直接从源站下载，不消耗服务器流量
+app.get('/api/dl', checkAuth, async (req, res) => {
+  try {
+    const { title, artist, id, platform } = req.query;
+    const song = { title: title || '', artist: artist || '', id, platform };
+    const url = await sourceGetUrlByPlatform(song, '320k');
+    if (!url) return res.status(404).send('未找到歌曲链接');
+    res.redirect(url);
+  } catch(e) { res.status(500).send(e.message); }
+});
+
+app.post('/api/local-url', checkAuth, async (req, res) => {
+  try {
+    const { song } = req.body;
+    if (!song) return res.status(400).json({ error: 'song不能为空' });
+    const url = await sourceGetUrlByPlatform(song, '320k');
+    if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
+    res.json({ ok: true, url });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// 本地下载：代理下载，强制浏览器下载文件
+app.post('/api/local-download', checkAuth, async (req, res) => {
+  try {
+    const { song } = req.body;
+    if (!song) return res.status(400).json({ error: 'song不能为空' });
+    const url = await sourceGetUrlByPlatform(song, '320k');
+    if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
+    const title = (song.title || song.name || 'song').replace(/[\\\/:*?"<>|]/g, '_');
+    const artist = (song.artist || '').replace(/[\\\/:*?"<>|]/g, '_');
+    const filename = encodeURIComponent(title + ' - ' + artist + '.mp3');
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(buf);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// 本地下载：打包成zip一次下载
+app.post('/api/local-zip', checkAuth, async (req, res) => {
+  try {
+    const { songs } = req.body;
+    if (!songs || !songs.length) return res.status(400).json({ error: 'songs不能为空' });
+    const archiver = require('archiver');
+    const archive = archiver('zip', { zlib: { level: 5 } });
+    res.setHeader('Content-Disposition', `attachment; filename="songs.zip"`);
+    res.setHeader('Content-Type', 'application/zip');
+    archive.pipe(res);
+    const usedNames = {};
+    for (const song of songs) {
+      try {
+        const url = await sourceGetUrlByPlatform(song, '320k');
+        if (!url) continue;
+        let name = ((song.title || song.name) + ' - ' + (song.artist || '')).replace(/[\\\/:*?"<>|]/g, '_') || 'song';
+        if (usedNames[name]) { name = name + ' (' + (++usedNames[name]) + ')'; } else { usedNames[name] = 1; }
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const buf = Buffer.from(await r.arrayBuffer());
+        archive.append(buf, { name: name + '.mp3' });
+      } catch(e) { console.log('zip skip:', song.title, e.message); }
+    }
+    await archive.finalize();
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/download', requireDownload, async (req, res) => {
   const { songs, quality } = req.body;
   const id = ++taskId;
   const items = songs.map(s => ({ title: s.title || s.name, artist: s.artist, status: '排队中' }));

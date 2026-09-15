@@ -4,14 +4,14 @@ services:
     container_name: lx-downloader
     restart: unless-stopped
     ports:
-      - "9527:9527"
+      - "5200:5200"
     volumes:
       - ./app:/app
       - ./downloads:/downloads
     working_dir: /app
     command: sh -c "npm install --production --registry=https://registry.npmmirror.com && node server.js"
     environment:
-      - PORT=9527
+      - PORT=5200
       - DOWNLOAD_DIR=/downloads
       - SONGLOFT_URL=http://host.docker.internal:58091
     extra_hosts:

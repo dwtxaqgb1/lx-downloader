@@ -5,9 +5,9 @@ services:
     container_name: lx-downloader
     restart: unless-stopped
     ports:
-      - "9527:9527"
+      - "5200:5200"
     volumes:
       - /vol1/1000/音乐/downloads:/downloads
     environment:
-      - PORT=9527
+      - PORT=5200
       - DOWNLOAD_DIR=/downloads

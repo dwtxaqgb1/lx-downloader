@@ -118,9 +118,23 @@ input:checked + .slider:before { transform:translateX(16px); }
 </style>
 </head>
 <body>
+<!-- 登录页 -->
+<div id="login-page" style="position:fixed;inset:0;background:#0f1117;z-index:9999;display:none;align-items:center;justify-content:center">
+  <div style="background:#161b22;padding:32px;border-radius:12px;width:320px;max-width:90vw">
+    <h2 style="text-align:center;color:#58a6ff;margin-bottom:24px">NAS歌曲下载</h2>
+    <input type="text" id="login-user" placeholder="用户名" onkeydown="if(event.key==='Enter')document.getElementById('login-pass').focus()" style="width:100%;box-sizing:border-box;margin-bottom:12px;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3">
+    <input type="password" id="login-pass" placeholder="密码" onkeydown="if(event.key==='Enter')doLogin()" style="width:100%;box-sizing:border-box;margin-bottom:16px;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3">
+    <button class="btn btn-primary" style="width:100%" onclick="doLogin()">登 录</button>
+    <p id="login-err" style="color:#f85149;font-size:12px;text-align:center;margin-top:12px;display:none"></p>
+  </div>
+</div>
+<div id="app" style="display:none">
 <div class="topbar">
   <span class="app-title">NAS歌曲下载</span>
-  <button class="settings-btn" onclick="openSettings()">⚙</button>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span id="user-badge" style="font-size:12px;color:#8b949e;cursor:pointer" onclick="logout()" title="点击退出登录"></span>
+    <button class="settings-btn" onclick="openSettings()">⚙</button>
+  </div>
 </div>
 <div class="header">
   <button class="tab-btn active" data-tab="search">搜索</button>
@@ -138,7 +152,10 @@ input:checked + .slider:before { transform:translateX(16px); }
       <div class="toolbar" id="search-row2">
         <select id="search-platform"><option value="163">网易云</option><option value="qq">QQ音乐</option></select>
         <select id="search-quality"><option value="128k">标准</option><option value="320k" selected>极高</option><option value="flac">无损</option></select>
-        <button class="btn btn-primary btn-sm" onclick="downloadSelected('search')">下载选中</button>
+        <button class="btn btn-primary btn-sm btn-download-only" onclick="downloadSelected('search')">下载到NAS</button>
+        <button class="btn btn-sm" style="background:#d4a017;color:#fff" onclick="downloadLocalSelected('search')">下载到本地</button>
+        <button class="btn btn-sm btn-download-only" style="background:#238636;color:#fff" onclick="downloadZipSelected('search')">下载打包zip</button>
+        <button class="btn btn-sm" style="background:#238636;color:#fff" onclick="showSavePlaylist('search')">保存到歌单</button>
         <button class="btn btn-sm" onclick="playSelected('search')">选中播放</button>
         <button class="btn btn-sm" onclick="playAll('search')">全部播放</button>
       </div>
@@ -158,7 +175,10 @@ input:checked + .slider:before { transform:translateX(16px); }
             <button class="btn btn-sm" onclick="playAll('toplist')">全部播放</button>
             <button class="btn btn-sm" onclick="playSelected('toplist')">选中播放</button>
             <select id="toplist-quality"><option value="128k">标准</option><option value="320k" selected>极高</option><option value="flac">无损</option></select>
-            <button class="btn btn-primary btn-sm" onclick="downloadSelected('toplist')">下载选中</button>
+            <button class="btn btn-primary btn-sm btn-download-only" onclick="downloadSelected('toplist')">下载到NAS</button>
+            <button class="btn btn-sm" style="background:#d4a017;color:#fff" onclick="downloadLocalSelected('toplist')">下载到本地</button>
+            <button class="btn btn-sm btn-download-only" style="background:#238636;color:#fff" onclick="downloadZipSelected('toplist')">下载打包zip</button>
+            <button class="btn btn-sm" style="background:#238636;color:#fff" onclick="showSavePlaylist('toplist')">保存到歌单</button>
           </div>
           <div class="song-list" id="toplist-results"></div>
         </div>
@@ -190,7 +210,9 @@ input:checked + .slider:before { transform:translateX(16px); }
           <button class="btn btn-sm" onclick="playAllPlDetail()">全部播放</button>
           <button class="btn btn-sm" onclick="playSelectedPlDetail()">选中播放</button>
           <select id="pl-quality"><option value="128k">标准</option><option value="320k" selected>极高</option><option value="flac">无损</option></select>
-          <button class="btn btn-primary btn-sm" onclick="downloadPlDetail()">下载选中</button>
+          <button class="btn btn-primary btn-sm btn-download-only" onclick="downloadPlDetail()">下载到NAS</button>
+          <button class="btn btn-sm" style="background:#d4a017;color:#fff" onclick="downloadLocalPlDetail()">下载到本地</button>
+          <button class="btn btn-sm btn-download-only" style="background:#238636;color:#fff" onclick="downloadZipPlDetail()">下载打包zip</button>
         </div>
         <div class="song-list" id="pl-detail-songs"></div>
       </div>
@@ -228,6 +250,20 @@ input:checked + .slider:before { transform:translateX(16px); }
   <span class="time" id="time-display">0:00 / 0:00</span>
   <button onclick="event.stopPropagation();stopPlay()" style="background:#30363d">⏹</button>
 </div>
+<!-- 保存到歌单弹窗 -->
+<div id="save-pl-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9998;align-items:center;justify-content:center">
+  <div style="background:#161b22;padding:24px;border-radius:12px;width:380px;max-width:90vw">
+    <h3 style="color:#58a6ff;margin-bottom:16px">保存到歌单</h3>
+    <div id="save-pl-list" style="max-height:200px;overflow-y:auto;margin-bottom:16px"></div>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <input type="text" id="save-pl-name" placeholder="新建歌单名称" style="flex:1;padding:8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3">
+      <button class="btn btn-sm" onclick="createPlaylistFromSave()" style="white-space:nowrap">新建</button>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-sm" onclick="closeSavePlaylist()">取消</button>
+    </div>
+  </div>
+</div>
 <!-- 大图播放器弹窗 -->
 <div class="player-modal" id="player-modal">
   <div class="bg-blur" id="modal-bg"></div>
@@ -248,29 +284,73 @@ input:checked + .slider:before { transform:translateX(16px); }
 </div>
 <!-- 设置页面 -->
 <div id="tab-settings" class="tab-content hidden">
-  <div class="card">
-    <h3 style="color:#58a6ff;margin-bottom:16px">设置</h3>
-    <h3 style="font-size:14px;color:#c9d1d9;margin-bottom:8px">音源管理</h3>
-    <div id="source-list"></div>
-    <div class="upload-area" onclick="document.getElementById('source-file').click()" style="margin-top:8px">
-      点击上传音源 JS 文件
-      <input type="file" id="source-file" accept=".js" style="display:none" onchange="uploadSource(this)">
+  <div style="max-width:700px;margin:0 auto">
+
+    <!-- 音源管理 -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">📡</span>
+        <h3 style="font-size:15px;color:#58a6ff;margin:0">音源管理</h3>
+      </div>
+      <div id="source-list"></div>
+      <div class="upload-area" onclick="document.getElementById('source-file').click()">
+        点击上传音源 JS 文件
+        <input type="file" id="source-file" accept=".js" style="display:none" onchange="uploadSource(this)">
+      </div>
+      <p class="tip" style="margin-top:6px;font-size:12px">可上传多个音源，开关控制是否启用，挂了可删除重新上传</p>
     </div>
-    <p class="tip" style="margin-top:8px">可上传多个音源，开关控制是否启用，挂了可删除重新上传</p>
-    <h3 style="font-size:14px;color:#c9d1d9;margin:16px 0 8px">歌单管理</h3>
-    <textarea id="paste-input" placeholder="粘贴歌单JSON或逐行输入：歌名-歌手" style="height:80px"></textarea>
-    <div class="toolbar" style="margin-top:8px">
-      <input type="text" id="new-pl-name" placeholder="歌单名称">
-      <button class="btn btn-primary btn-sm" onclick="createPlaylist()">创建歌单</button>
+
+    <!-- 歌单管理 -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">📋</span>
+        <h3 style="font-size:15px;color:#58a6ff;margin:0">歌单管理</h3>
+      </div>
+      <textarea id="paste-input" placeholder='粘贴歌单JSON或逐行输入（格式：歌名-歌手）&#10;示例：&#10;让我欢喜让我忧-周华健&#10;痴心绝对-李圣杰&#10;或直接粘贴完整JSON数组' style="height:100px"></textarea>
+      <div class="toolbar" style="margin-top:8px">
+        <input type="text" id="new-pl-name" placeholder="歌单名称" style="flex:1">
+        <button class="btn btn-primary btn-sm" onclick="createPlaylist()">创建歌单</button>
+      </div>
+      <div class="upload-area" onclick="document.getElementById('file-input').click()" style="margin-top:8px">
+        点击上传歌单 JSON 文件
+        <input type="file" id="file-input" accept=".json" style="display:none" onchange="uploadPlaylistFile(this)">
+      </div>
     </div>
-    <div class="upload-area" onclick="document.getElementById('file-input').click()" style="margin-top:8px">
-      点击上传歌单 JSON 文件
-      <input type="file" id="file-input" accept=".json" style="display:none" onchange="uploadPlaylistFile(this)">
+
+    <!-- 榜单平台配置 -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">📊</span>
+        <h3 style="font-size:15px;color:#58a6ff;margin:0">榜单平台配置</h3>
+      </div>
+      <p class="tip" style="font-size:12px;margin-bottom:8px">JSON格式，可新增/删除/修改平台，{id}为榜单ID占位符，保存后自动生效</p>
+      <textarea id="cfg-platforms" style="height:260px;font-size:11px;font-family:monospace"></textarea>
+      <button class="btn btn-primary btn-sm" onclick="savePlatformConfig(this)" style="margin-top:8px">保存平台配置</button>
     </div>
-    <h3 style="font-size:14px;color:#c9d1d9;margin:16px 0 8px">榜单平台配置</h3>
-    <p class="tip" style="font-size:12px;margin-bottom:6px">JSON格式，可新增/删除/修改平台，{id}为榜单ID占位符，保存后刷新生效</p>
-    <textarea id="cfg-platforms" style="height:300px;font-size:11px;font-family:monospace"></textarea>
-    <button class="btn btn-primary btn-sm" onclick="savePlatformConfig(this)">保存平台配置</button>
+
+    <!-- 账号安全 -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">🔐</span>
+        <h3 style="font-size:15px;color:#58a6ff;margin:0">账号安全</h3>
+      </div>
+      <div style="max-width:300px">
+        <input type="text" id="cfg-user" placeholder="新用户名（留空不修改）" style="margin-bottom:8px;width:100%;box-sizing:border-box">
+        <input type="password" id="cfg-pass" placeholder="新密码（留空不修改）" style="margin-bottom:10px;width:100%;box-sizing:border-box">
+        <button class="btn btn-primary btn-sm" onclick="changeAuth(this)" style="width:100%">修改管理员密码</button>
+      </div>
+      <div style="margin-top:20px">
+        <h4 style="font-size:13px;color:#8b949e;margin-bottom:8px">访客账户（只能听歌不能下载）</h4>
+        <div id="user-list" style="margin-bottom:10px"></div>
+        <div style="max-width:300px">
+          <input type="text" id="new-user" placeholder="访客用户名" style="margin-bottom:6px;width:100%;box-sizing:border-box">
+          <input type="password" id="new-pass" placeholder="访客密码" style="margin-bottom:8px;width:100%;box-sizing:border-box">
+          <button class="btn btn-primary btn-sm" onclick="addUser(this)" style="width:100%">添加访客</button>
+        </div>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="logout()" style="margin-top:16px">退出登录</button>
+    </div>
+
   </div>
 </div>
 <script>
@@ -382,6 +462,96 @@ function downloadSelected(src){
   startDownload(songs, q);
 }
 
+async function downloadLocalSelected(src){
+  var songs=getSelected(src);
+  if(!songs.length){alert('请先选择歌曲');return;}
+  if(songs.length>5){alert('请确认你的浏览器支持多任务下载');}
+  var btn=event.target; var orig=btn.textContent;
+  btn.disabled=true;
+  for(var i=0;i<songs.length;i++){
+    btn.textContent='下载中 '+(i+1)+'/'+songs.length;
+    var s=songs[i];
+    try{
+      var r=await fetch('/api/local-download',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},body:JSON.stringify({song:s})});
+      if(r.ok){
+        var blob=await r.blob();
+        var a=document.createElement('a');
+        var url=URL.createObjectURL(blob);
+        a.href=url;
+        a.download=(s.title||s.name)+' - '+(s.artist||'')+'.mp3';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function(){URL.revokeObjectURL(url);},10000);
+      }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,500));
+  }
+  btn.disabled=false; btn.textContent=orig;
+}
+
+async function downloadZipSelected(src){
+  var songs=getSelected(src);
+  if(!songs.length){alert('请先选择歌曲');return;}
+  var btn=event.target; var orig=btn.textContent;
+  btn.disabled=true; btn.textContent='打包中...';
+  try{
+    var r=await fetch('/api/local-zip',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},body:JSON.stringify({songs})});
+    if(r.ok){
+      var blob=await r.blob();
+      var a=document.createElement('a');
+      var url=URL.createObjectURL(blob);
+      a.href=url;
+      a.download='songs.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},10000);
+    }
+  }catch(e){}
+  btn.disabled=false; btn.textContent=orig;
+}
+
+var savePlSource='';
+async function showSavePlaylist(src){
+  var songs=getSelected(src);
+  if(!songs.length){alert('请先选择歌曲');return;}
+  savePlSource=src;
+  savePlSongs=songs;
+  var r=await fetch('/api/playlists');
+  var d=await r.json();
+  var html='';
+  d.playlists.forEach(function(p){
+    html+='<div onclick="saveToPlaylist(\''+esc(p.name)+'\')" style="padding:10px;border:1px solid #30363d;border-radius:6px;margin-bottom:6px;cursor:pointer" onmouseover="this.style.background=#21262d" onmouseout="this.style.background=transparent">🎵 '+esc(p.name)+' <span style="color:#8b949e;font-size:12px">('+p.count+')</span></div>';
+  });
+  document.getElementById('save-pl-list').innerHTML=html||'<p class="tip">暂无歌单</p>';
+  document.getElementById('save-pl-modal').style.display='flex';
+}
+function closeSavePlaylist(){document.getElementById('save-pl-modal').style.display='none';}
+var savePlSongs=[];
+async function saveToPlaylist(name){
+  var r=await fetch('/api/playlists/'+encodeURIComponent(name)+'/songs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({songs:savePlSongs})});
+  var d=await r.json();
+  if(d.ok){closeSavePlaylist();showToast('已保存到 '+name);}
+  else alert(d.error||'保存失败');
+}
+async function createPlaylistFromSave(){
+  var name=document.getElementById('save-pl-name').value.trim();
+  if(!name){alert('请输入歌单名称');return;}
+  var r=await fetch('/api/playlists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,songs:savePlSongs})});
+  var d=await r.json();
+  if(d.ok){closeSavePlaylist();showToast('已创建并保存到 '+name);}
+  else alert(d.error||'创建失败');
+}
+function showToast(msg){
+  var t=document.createElement('div');
+  t.textContent=msg;
+  t.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(35,134,54,0.95);color:#fff;padding:14px 32px;border-radius:8px;z-index:9999;font-size:15px;box-shadow:0 4px 12px rgba(0,0,0,0.4)';
+  document.body.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';t.style.transition='opacity 0.3s';},1500);
+  setTimeout(function(){t.remove();},2000);
+}
+
 async function showPlaylistList(){
   document.getElementById('pl-list-view').classList.remove('hidden');
   document.getElementById('pl-detail-view').classList.add('hidden');
@@ -389,7 +559,7 @@ async function showPlaylistList(){
   var d=await r.json();
   if(!d.playlists.length){document.getElementById('playlist-list').innerHTML='<p class="tip">暂无歌单，请上传或创建</p>';return;}
   document.getElementById('playlist-list').innerHTML=d.playlists.map(function(p){
-    return '<div class="pl-item" onclick="openPlaylist(\''+esc(p.name)+'\')"><span class="icon">🎵</span><div class="info"><div class="pl-name">'+esc(p.name)+'</div><div class="pl-count">'+p.count+' 首歌曲</div></div><button class="btn btn-sm" style="background:#da3633;color:#fff" onclick="event.stopPropagation();toggleDeletePlaylist(this,\''+esc(p.name)+'\')">删除</button></div>';
+    return '<div class="pl-item" onclick="openPlaylist(\''+esc(p.name)+'\')"><span class="icon">🎵</span><div class="info"><div class="pl-name">'+esc(p.name)+'</div><div class="pl-count">'+p.count+' 首歌曲</div></div><button class="btn btn-sm" class="btn btn-sm btn-delete" style="background:#da3633;color:#fff" onclick="event.stopPropagation();toggleDeletePlaylist(this,\''+esc(p.name)+'\')">删除</button></div>';
   }).join('');
 }
 
@@ -442,6 +612,60 @@ function downloadPlDetail(){
   }).filter(Boolean).map(function(s){return {title:s.title||s.name, artist:s.artist||''};});
   if(!songs.length){alert('请先选择歌曲');return;}
   startDownload(songs, document.getElementById('pl-quality'));
+}
+
+async function downloadLocalPlDetail(){
+  var songs=Array.from(document.querySelectorAll('.pl-detail-cb:checked')).map(function(cb){
+    return currentPlaylist.songs[parseInt(cb.dataset.idx)];
+  }).filter(Boolean).map(function(s){return {title:s.title||s.name, artist:s.artist||''};});
+  if(!songs.length){alert('请先选择歌曲');return;}
+  if(songs.length>5){alert('请确认你的浏览器支持多任务下载');}
+  var btn=event.target; var orig=btn.textContent;
+  btn.disabled=true;
+  for(var i=0;i<songs.length;i++){
+    btn.textContent='下载中 '+(i+1)+'/'+songs.length;
+    var s=songs[i];
+    try{
+      var r=await fetch('/api/local-download',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},body:JSON.stringify({song:s})});
+      if(r.ok){
+        var blob=await r.blob();
+        var a=document.createElement('a');
+        var url=URL.createObjectURL(blob);
+        a.href=url;
+        a.download=(s.title||s.name)+' - '+(s.artist||'')+'.mp3';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function(){URL.revokeObjectURL(url);},10000);
+      }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,500));
+  }
+  btn.disabled=false; btn.textContent=orig;
+}
+
+async function downloadZipPlDetail(){
+  var songs=Array.from(document.querySelectorAll('.pl-detail-cb:checked')).map(function(cb){
+    return currentPlaylist.songs[parseInt(cb.dataset.idx)];
+  }).filter(Boolean).map(function(s){return {title:s.title||s.name, artist:s.artist||''};});
+  if(!songs.length){alert('请先选择歌曲');return;}
+  var btn=event.target; var orig=btn.textContent;
+  btn.disabled=true; btn.textContent='打包中...';
+  try{
+    var r=await fetch('/api/local-zip',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},body:JSON.stringify({songs})});
+    if(r.ok){
+      var blob=await r.blob();
+      var a=document.createElement('a');
+      var url=URL.createObjectURL(blob);
+      a.href=url;
+      a.download='songs.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},10000);
+    }
+  }catch(e){}
+  btn.disabled=false; btn.textContent=orig;
 }
 
 function parsePasteSongs(text){
@@ -551,7 +775,7 @@ async function loadSourceList(){
   var d=await r.json();
   if(!d.sources.length){document.getElementById('source-list').innerHTML='<p class="tip">暂无音源</p>';return;}
   document.getElementById('source-list').innerHTML=d.sources.map(function(s){
-    return '<div class="src-item"><span class="name">'+esc(s.name)+'</span><label class="switch"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="toggleSource('+s.id+')"><span class="slider"></span></label><button class="btn btn-danger btn-sm" onclick="toggleDeleteSource(this,'+s.id+')">删除</button></div>';
+    return '<div class="src-item"><span class="name">'+esc(s.name)+'</span><label class="switch"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="toggleSource('+s.id+')"><span class="slider"></span></label><button class="btn btn-danger btn-sm btn-delete" onclick="toggleDeleteSource(this,'+s.id+')">删除</button></div>';
   }).join('');
 }
 
@@ -695,6 +919,7 @@ async function openSettings(){
   document.querySelectorAll('.tab-content').forEach(function(t){t.classList.add('hidden');});
   document.getElementById('tab-settings').classList.remove('hidden');
   loadSourceList();
+  loadUserList();
   try{var c=await (await fetch('/api/config')).json();
     document.getElementById('cfg-platforms').value = JSON.stringify(c.platforms, null, 2);
   }catch(e){}
@@ -755,6 +980,141 @@ renderHistory();
 
 function openToplistSidebar(){document.getElementById('toplist-sidebar').classList.add('open');document.getElementById('toplist-overlay').classList.add('show');}
 function closeToplistSidebar(){document.getElementById('toplist-sidebar').classList.remove('open');document.getElementById('toplist-overlay').classList.remove('show');}
+
+// 认证
+var AUTH_TOKEN = localStorage.getItem('lx_token') || '';
+var USER_ROLE = localStorage.getItem('lx_role') || 'guest';
+var USER_NAME = localStorage.getItem('lx_user') || '';
+var CAN_DOWNLOAD = localStorage.getItem('lx_can_dl') === '1';
+var _origFetch = window.fetch;
+window.fetch = function(url, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {'Authorization':'Bearer '+AUTH_TOKEN});
+  return _origFetch.call(this, url, opts);
+};
+function authHeaders(){ return {'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN}; }
+async function checkLogin(){
+  if(!AUTH_TOKEN){ showLogin(); return; }
+  try{
+    var r = await fetch('/api/history',{headers:authHeaders()});
+    if(r.status === 401){ showLogin(); }
+    else{ showApp(); applyRole(); }
+  }catch(e){ showLogin(); }
+}
+function showLogin(){ document.getElementById('login-page').style.display='flex'; document.getElementById('app').style.display='none'; }
+function showApp(){ document.getElementById('login-page').style.display='none'; document.getElementById('app').style.display='block'; }function applyRole(){
+  setTimeout(function(){
+  var badge = document.getElementById('user-badge');
+  var isAdmin = USER_ROLE === 'admin';
+  var canDl = isAdmin || CAN_DOWNLOAD;
+  if(isAdmin) badge.textContent = '👤 ' + USER_NAME + '（管理员）';
+  else badge.textContent = '👤 ' + USER_NAME + (canDl ? '（访客·可下载）' : '（访客）');
+  // 访客：隐藏下载和删除
+  if(!isAdmin){
+    document.querySelectorAll('.btn-download-only').forEach(function(b){ b.style.display='none'; });
+    var dlTab = document.querySelector('.tab-btn[data-tab="download"]');
+    if(dlTab) dlTab.style.display='none';
+    var sb = document.querySelector('.settings-btn');
+    if(sb) sb.style.display='none';
+    document.querySelectorAll('.btn-delete').forEach(function(b){ b.style.display='none'; });
+  }
+  }, 100);
+}
+async function doLogin(){
+  var u = document.getElementById('login-user').value;
+  var p = document.getElementById('login-pass').value;
+  var r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})});
+  var d = await r.json();
+  if(d.ok){
+    AUTH_TOKEN = d.token;
+    USER_ROLE = d.role;
+    USER_NAME = d.user;
+    CAN_DOWNLOAD = d.canDownload || false;
+    localStorage.setItem('lx_token', d.token);
+    localStorage.setItem('lx_role', d.role);
+    localStorage.setItem('lx_user', d.user);
+    localStorage.setItem('lx_can_dl', CAN_DOWNLOAD ? '1' : '0');
+    showApp();
+    location.reload();
+  } else {
+    document.getElementById('login-err').textContent = d.msg || '登录失败';
+    document.getElementById('login-err').style.display='block';
+  }
+}
+var logoutArmed=false,logoutTimer=null;
+function logout(){
+  if(!logoutArmed){
+    logoutArmed=true;
+    var badge=document.getElementById('user-badge');
+    var orig=badge.textContent;
+    badge.textContent='⚠ 再点一次确认退出';
+    badge.style.color='#f85149';
+    logoutTimer=setTimeout(function(){logoutArmed=false;badge.textContent=orig;badge.style.color='';},3000);
+    return;
+  }
+  clearTimeout(logoutTimer);
+  localStorage.removeItem('lx_token');
+  localStorage.removeItem('lx_role');
+  localStorage.removeItem('lx_user');
+  location.reload();
+}
+
+async function changeAuth(btn){
+  var u = document.getElementById('cfg-user').value;
+  var p = document.getElementById('cfg-pass').value;
+  if(!u && !p){ alert('请填写新用户名或新密码'); return; }
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> 保存中...';
+  await fetch('/api/change-auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u||undefined,pass:p||undefined})});
+  btn.innerHTML = '✓ 已保存';
+  setTimeout(function(){ btn.disabled=false; btn.textContent=orig; document.getElementById('cfg-user').value=''; document.getElementById('cfg-pass').value=''; }, 800);
+}
+
+async function loadUserList(){
+  try{
+    var r = await fetch('/api/users');
+    var d = await r.json();
+    document.getElementById('user-list').innerHTML = (d.users||[]).map(function(u){
+      var tag = u.role==='admin'?'管理员':'访客';
+      var dlSwitch = u.role==='admin'?'':'<label style="margin-left:8px;font-size:12px;cursor:pointer"><input type="checkbox" '+(u.canDownload?'checked':'')+' onchange="toggleDl(\''+u.user+'\',this.checked)"> 允许下载</label>';
+      var del = u.role==='admin'?'':'<button class="btn btn-danger btn-sm" style="margin-left:8px;padding:2px 8px" onclick="delUser(\''+u.user+'\')">删除</button>';
+      return '<div style="padding:6px 0;border-bottom:1px solid #21262d;font-size:13px">'+esc(u.user)+' <span style="color:#8b949e;font-size:12px">'+tag+'</span>'+dlSwitch+del+'</div>';
+    }).join('');
+  }catch(e){}
+}
+
+async function toggleDl(user, val){
+  await fetch('/api/users/'+encodeURIComponent(user),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({canDownload:val})});
+}
+
+async function addUser(btn){
+  var u = document.getElementById('new-user').value;
+  var p = document.getElementById('new-pass').value;
+  if(!u || !p){ alert('请输入用户名和密码'); return; }
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span>';
+  var r = await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p,role:'guest'})});
+  if(r.ok){
+    document.getElementById('new-user').value='';
+    document.getElementById('new-pass').value='';
+    loadUserList();
+  } else {
+    var d = await r.json();
+    alert(d.error || '添加失败');
+  }
+  btn.disabled = false;
+  btn.textContent = orig;
+}
+
+async function delUser(u){
+  if(!confirm('确定删除访客 '+u+' ？')) return;
+  await fetch('/api/users/'+encodeURIComponent(u),{method:'DELETE'});
+  loadUserList();
+}
+
+checkLogin();
 </script>
 </body>
 </html>
