@@ -1,0 +1,18 @@
+services:
+  lx-downloader:
+    image: node:18-alpine
+    container_name: lx-downloader
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    volumes:
+      - ./app:/app
+      - ./downloads:/downloads
+    working_dir: /app
+    command: sh -c "npm install --production --registry=https://registry.npmmirror.com && node server.js"
+    environment:
+      - PORT=9527
+      - DOWNLOAD_DIR=/downloads
+      - SONGLOFT_URL=http://host.docker.internal:58091
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

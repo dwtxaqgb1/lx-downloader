@@ -1,0 +1,13 @@
+version: '3'
+services:
+  lx-downloader:
+    build: .
+    container_name: lx-downloader
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    volumes:
+      - /vol1/1000/音乐/downloads:/downloads
+    environment:
+      - PORT=9527
+      - DOWNLOAD_DIR=/downloads
