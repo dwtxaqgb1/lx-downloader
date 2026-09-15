@@ -559,7 +559,6 @@ async function downloadLocalSelected(src){
         setDlLog((i+1)+'. '+(s.title||s.name)+' ✗ 未找到');
       }
     }catch(e){ setDlLog((i+1)+'. '+(s.title||s.name)+' ✗ '+e.message); }
-    await new Promise(r=>setTimeout(r,500));
   }
   setDlProgress(songs.length, songs.length, '', '完成');
   var modal=document.getElementById('dl-progress-modal');
@@ -733,7 +732,6 @@ async function downloadLocalPlDetail(){
         setDlLog((i+1)+'. '+(s.title||s.name)+' ✗ 未找到');
       }
     }catch(e){ setDlLog((i+1)+'. '+(s.title||s.name)+' ✗ '+e.message); }
-    await new Promise(r=>setTimeout(r,500));
   }
   setDlProgress(songs.length, songs.length, '', '完成');
   var modal=document.getElementById('dl-progress-modal');
@@ -1123,10 +1121,9 @@ function showApp(){ document.getElementById('login-page').style.display='none'; 
   setTimeout(function(){
   var badge = document.getElementById('user-badge');
   var isAdmin = USER_ROLE === 'admin';
-  var canDl = isAdmin || CAN_DOWNLOAD;
   if(isAdmin) badge.textContent = '👤 ' + USER_NAME + '（管理员）';
-  else badge.textContent = '👤 ' + USER_NAME + (canDl ? '（访客·可下载）' : '（访客）');
-  // 访客：隐藏下载和删除
+  else badge.textContent = '👤 ' + USER_NAME + '（访客）';
+  // 访客：隐藏所有下载、删除、设置功能
   if(!isAdmin){
     document.querySelectorAll('.btn-download-only').forEach(function(b){ b.style.display='none'; });
     var dlTab = document.querySelector('.tab-btn[data-tab="download"]');
