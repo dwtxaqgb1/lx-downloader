@@ -5,27 +5,23 @@ const path = require('path');
 const vm = require('vm');
 
 async function downloadFile(url) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? require('https') : require('http');
-    const doGet = (u) => {
-      const req = mod.get(u, { headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.kuwo.cn/'
-      }}, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          return doGet(new URL(res.headers.location, u).href);
-        }
-        if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
-        const chunks = [];
-        res.on('data', c => chunks.push(c));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-      });
-      req.on('error', reject);
-      req.setTimeout(30000, () => req.destroy(new Error('timeout')));
-    };
-    doGet(url);
-  });
+  console.log('downloadFile开始:', url.substring(0, 80));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const resp = await fetch(url, { headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://www.kuwo.cn/'
+    }, signal: controller.signal });
+    console.log('downloadFile响应:', resp.status, resp.headers.get('content-type'));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('html') || ct.includes('text') || ct.includes('json')) throw new Error('非音频 ' + ct);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    console.log('downloadFile大小:', buf.length);
+    if (buf.length < 10000) throw new Error('文件太小 ' + buf.length);
+    return buf;
+  } finally { clearTimeout(timer); }
 }
 
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/downloads';
@@ -146,6 +142,7 @@ app.delete('/api/users/:user', checkAuth, requireAdmin, (req, res) => {
 
 app.use(checkAuth);
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store') }));
+app.use('/preview', express.static(path.join(DATA_DIR, 'preview'), { maxAge: 86400000 }));
 
 // ===== 多音源管理 =====
 const SOURCES_FILE = path.join(DATA_DIR, 'sources.json');
@@ -285,7 +282,31 @@ async function gdstudioFlac(songId, quality) {
   return null;
 }
 
-// 用音源获取播放链接（优先wy网易云，因为音源wy支持最好）
+// 直连oiapi.net获取URL并立即下载（绕过音源JS的延迟）
+async function oiapiDownload(title, artist, quality) {
+  try {
+    const br = quality === 'flac' ? 1 : (quality === '320k' ? 2 : 3);
+    const keyword = encodeURIComponent(title + ' ' + (artist || ''));
+    const r = await fetch(`https://oiapi.net/api/Kuwo?msg=${keyword}&n=1&br=${br}`);
+    const d = await r.json();
+    let url = null;
+    if (d.data && d.data.url) url = d.data.url;
+    if (!url && d.message) {
+      const m = d.message.match(/音乐链接：(\S+)/);
+      if (m) url = m[1];
+    }
+    if (!url) return null;
+    console.log('oiapi URL完整:', url);
+    const buf = await downloadFile(url);
+    if (buf && buf.length > 10000) {
+      const ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
+      return { url, buf, ext };
+    }
+  } catch(e) { console.log('oiapi error:', e.message); }
+  return null;
+}
+
+// 用音源获取播放链接，获取后立即下载buffer返回（避免URL过期）
 async function sourceGetUrlByPlatform(song, quality) {
   // 确保用网易云id查：如果不是163平台，先搜163
   let songId = song.id;
@@ -298,8 +319,7 @@ async function sourceGetUrlByPlatform(song, quality) {
   }
   console.log('lookup:', song.title, 'id=' + songId, 'quality=' + quality);
 
-  // 只使用上传的JS音源获取播放链接
-  const trySources = ['wy', 'tx', 'kw', 'kg', 'mg'];
+  const trySources = ['kw', 'kg', 'mg', 'wy', 'tx'];
   for (const srcId of trySources) {
     for (const [sid, s] of sources) {
       if (!s.enabled || !s.handler) continue;
@@ -336,13 +356,19 @@ async function sourceGetUrlByPlatform(song, quality) {
           const url = typeof result === 'string' ? result : result.url;
           if (url) {
             console.log('source OK:', srcId, song.title, 'quality=' + quality);
-            return url;
+            // 立即下载buffer（URL有效期短）
+            try {
+              const buf = await downloadFile(url);
+              if (buf && buf.length > 10000) {
+                return { url, buf, ext: (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (quality === 'flac' ? 'flac' : 'mp3') };
+              }
+              console.log('下载文件太小，试下一个源');
+            } catch(e) { console.log('下载失败:', srcId, e.message); }
           }
         }
       } catch(e) { console.log('source error:', srcId, e.message); }
     }
   }
-
   console.log('no source found:', song.title);
   return null;
 }
@@ -463,10 +489,15 @@ app.get('/api/preview', async (req, res) => {
     }
     if (!best || bestScore < 20) return res.status(404).json({ error: 'not found' });
 
-    // 2. 用音源获取完整链接
-    const srcUrl = await sourceGetUrlByPlatform(best, '128k');
-    if (srcUrl && !srcUrl.includes('error') && srcUrl.length > 10) {
-      return res.json({ url: srcUrl, title: best.title, artist: best.artist, from: 'source' });
+    // 2. 直连oiapi获取URL并立即下载
+    let src = await oiapiDownload(best.title, best.artist, '128k');
+    if (!src) src = await sourceGetUrlByPlatform(best, '128k');
+    if (src && src.buf) {
+      const tmpDir = path.join(DATA_DIR, 'preview');
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      const tmpFile = path.join(tmpDir, Date.now() + '-' + Math.random().toString(36).slice(2) + '.' + src.ext);
+      fs.writeFileSync(tmpFile, src.buf);
+      return res.json({ url: '/preview/' + path.basename(tmpFile), title: best.title, artist: best.artist, from: 'source' });
     }
     res.status(404).json({ error: '音源无法获取链接', title: best.title, artist: best.artist });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -741,22 +772,23 @@ app.post('/api/download', requireDownload, async (req, res) => {
 
       if (bestSong) {
         items[i].status = '音源获取链接';
-        // 音质降级链：flac -> 320k -> 128k，每个音质尝试获取URL并下载
+        // 音质降级链：flac -> 320k -> 128k
         const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
         for (const q of qualityChain) {
-          const url = await sourceGetUrlByPlatform(bestSong, q);
-          if (!url) continue;
-          items[i].status = '下载中';
-          try {
-            const buf = await downloadFile(url);
-            if (buf && buf.length > 10000) {
-              musicUrl = url;
-              items[i].buf = buf;
-              items[i].ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (q === 'flac' ? 'flac' : 'mp3');
-              break;
-            }
-            console.log('下载文件太小，试下一个音质:', q, buf ? buf.length : 0);
-          } catch(e) { console.log('下载失败:', q, e.message); }
+          if (task.cancelled) return;
+          // 优先直连oiapi.net（最快，URL不过期）
+          let result = await oiapiDownload(bestSong.title, bestSong.artist, q);
+          if (!result) {
+            // 备用：通过音源JS
+            result = await sourceGetUrlByPlatform(bestSong, q);
+          }
+          if (result && result.buf) {
+            musicUrl = result.url;
+            items[i].buf = result.buf;
+            items[i].ext = result.ext;
+            items[i].status = '下载中';
+            break;
+          }
         }
       }
 
