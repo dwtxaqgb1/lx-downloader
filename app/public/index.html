@@ -312,20 +312,6 @@ input:checked + .slider:before { transform:translateX(16px); }
 <div id="tab-settings" class="tab-content hidden">
   <div style="max-width:700px;margin:0 auto">
 
-    <!-- 音源管理 -->
-    <div class="card" style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <span style="font-size:18px">📡</span>
-        <h3 style="font-size:15px;color:#58a6ff;margin:0">音源管理</h3>
-      </div>
-      <div id="source-list"></div>
-      <div class="upload-area" onclick="document.getElementById('source-file').click()">
-        点击上传音源 JS 文件
-        <input type="file" id="source-file" accept=".js" style="display:none" onchange="uploadSource(this)">
-      </div>
-      <p class="tip" style="margin-top:6px;font-size:12px">可上传多个音源，开关控制是否启用，挂了可删除重新上传</p>
-    </div>
-
     <!-- 歌单管理 -->
     <div class="card" style="margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
@@ -400,7 +386,7 @@ var currentPlayBtn=null, playQueue=[], playQueueIdx=0;
 var platformConfig={platforms:[]};
 var currentTopPlatform='';
 var currentTopLists={};
-var deleteArmed=false,deleteTimer=null,srcDeleteArmed=null,srcDeleteTimer=null;
+var deleteArmed=false,deleteTimer=null;
 
 document.querySelectorAll('.tab-btn').forEach(function(btn){
   btn.onclick=function(){
@@ -907,35 +893,6 @@ async function togglePause(){
   document.getElementById('btn-pause').textContent=d.paused?'继续':'暂停';
 }
 
-async function loadSourceList(){
-  var r=await fetch('/api/sources');
-  var d=await r.json();
-  if(!d.sources.length){document.getElementById('source-list').innerHTML='<p class="tip">暂无音源</p>';return;}
-  document.getElementById('source-list').innerHTML=d.sources.map(function(s){
-    return '<div class="src-item"><span class="name">'+esc(s.name)+'</span><label class="switch"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="toggleSource('+s.id+')"><span class="slider"></span></label><button class="btn btn-danger btn-sm btn-delete" onclick="toggleDeleteSource(this,'+s.id+')">删除</button></div>';
-  }).join('');
-}
-
-function toggleDeleteSource(btn,id){
-  if(srcDeleteArmed===id){deleteSource(id);return;}
-  srcDeleteArmed=id; btn.textContent='确认删除?';
-  clearTimeout(srcDeleteTimer);
-  srcDeleteTimer=setTimeout(function(){srcDeleteArmed=null;btn.textContent='删除';},3000);
-}
-async function deleteSource(id){
-  await fetch('/api/sources/'+id,{method:'DELETE'});
-  srcDeleteArmed=null; loadSourceList();
-}
-async function toggleSource(id){await fetch('/api/sources/'+id+'/toggle',{method:'POST'});}
-async function uploadSource(input){
-  var f=input.files[0]; if(!f) return;
-  var code=await f.text();
-  var r=await fetch('/api/upload-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,filename:f.name})});
-  var d=await r.json();
-  if(d.ok) loadSourceList(); else alert('加载失败：'+d.error);
-  input.value='';
-}
-
 // ===== 播放器 =====
 var audio=document.getElementById('player');
 var currentLyrics=[], currentLyricIndex=0;
@@ -1055,7 +1012,6 @@ async function openSettings(){
   document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
   document.querySelectorAll('.tab-content').forEach(function(t){t.classList.add('hidden');});
   document.getElementById('tab-settings').classList.remove('hidden');
-  loadSourceList();
   loadUserList();
   try{var c=await (await fetch('/api/config')).json();
     document.getElementById('cfg-platforms').value = JSON.stringify(c.platforms, null, 2);

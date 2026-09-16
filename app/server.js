@@ -2,10 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
 async function downloadFile(url) {
-  console.log('downloadFile开始:', url.substring(0, 80));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
@@ -13,12 +11,10 @@ async function downloadFile(url) {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Referer': 'https://www.kuwo.cn/'
     }, signal: controller.signal });
-    console.log('downloadFile响应:', resp.status, resp.headers.get('content-type'));
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const ct = resp.headers.get('content-type') || '';
     if (ct.includes('html') || ct.includes('text') || ct.includes('json')) throw new Error('非音频 ' + ct);
     const buf = Buffer.from(await resp.arrayBuffer());
-    console.log('downloadFile大小:', buf.length);
     if (buf.length < 10000) throw new Error('文件太小 ' + buf.length);
     return buf;
   } finally { clearTimeout(timer); }
@@ -144,8 +140,7 @@ app.use(checkAuth);
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store') }));
 app.use('/preview', express.static(path.join(DATA_DIR, 'preview'), { maxAge: 86400000 }));
 
-// ===== 多音源管理 =====
-const SOURCES_FILE = path.join(DATA_DIR, 'sources.json');
+// ===== 配置与歌单 =====
 const CONFIG_FILE = path.join(DATA_DIR, 'api-config.json');
 const PLAYLIST_DIR = path.join(DATA_DIR, 'playlists');
 
@@ -165,8 +160,8 @@ let apiConfig = JSON.parse(JSON.stringify(defaultConfig));
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     const saved = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    if (saved.platforms) apiConfig = saved;
-    else apiConfig = { platforms: defaultConfig.platforms };
+    if (saved.platforms) apiConfig.platforms = saved.platforms;
+    if (Array.isArray(saved.musicApis)) apiConfig.musicApis = saved.musicApis;
   } catch {}
 }
 function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(apiConfig, null, 2)); }
@@ -179,114 +174,6 @@ app.post('/api/config', (req, res) => {
   res.json({ ok: true });
 });
 if (!fs.existsSync(PLAYLIST_DIR)) fs.mkdirSync(PLAYLIST_DIR, { recursive: true });
-
-const sources = new Map();
-let sourceIdSeq = 0;
-
-function saveSources() {
-  const data = Array.from(sources.entries()).map(([id, s]) => ({ id, name: s.name, code: s.code, enabled: s.enabled }));
-  fs.writeFileSync(SOURCES_FILE, JSON.stringify(data));
-}
-
-function loadSource(code, filename, enabled = true) {
-  const handlers = {};
-  const srcList = {};
-  // callback风格request: request(url, opts, (err, resp, body) => {})
-  function request(url, opts, callback) {
-    if (typeof opts === 'function') { callback = opts; opts = {}; }
-    opts = opts || {};
-    fetch(url, {
-      method: (opts.method || 'GET').toUpperCase(),
-      headers: { ...(opts.headers || {}), 'User-Agent': 'Mozilla/5.0' },
-      body: opts.body || opts.data
-    }).then(async r => {
-      let text = await r.text();
-      let parsed = text;
-      try { parsed = JSON.parse(text); } catch {}
-      const safeResp = {
-        statusCode: r.status,
-        statusMessage: r.statusText,
-        headers: Object.fromEntries(r.headers),
-        body: parsed
-      };
-      callback(null, safeResp, parsed);
-    }).catch(e => callback(e));
-  }
-  const enProxy = new Proxy({}, { get(t,p){return p;} });
-  const lx = {
-    EVENT_NAMES: enProxy,
-    on: (e, h) => { if (e === 'request') handlers.request = h; },
-    send: (e, d) => { if (d && d.sources) Object.assign(srcList, d.sources); },
-    request,
-    log: () => {}, setCache: () => {}, getCache: () => null
-  };
-  const sandbox = {
-    console, setTimeout, clearTimeout, setInterval, clearTimeout,
-    Promise, JSON, Math, URL, URLSearchParams, Buffer,
-    EVENT_NAMES: enProxy,
-    on: lx.on, send: lx.send, request, log: lx.log,
-    lx
-  };
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  vm.runInContext(code, sandbox);
-  const id = ++sourceIdSeq;
-  sources.set(id, { name: filename, code, handler: handlers.request, enabled, srcList });
-  console.log(`Loaded source: ${filename}, sources: ${Object.keys(srcList).join(', ')}`);
-  return id;
-}
-
-// 调用音源JS处理请求
-function callSource(source, reqAction, reqInfo) {
-  return new Promise((resolve, reject) => {
-    if (!source || !source.handler) return reject(new Error('no handler'));
-    let done = false;
-    const resp = {
-      send(data) { if (!done) { done = true; resolve(data); } },
-      fail(err) { if (!done) { done = true; reject(new Error(err || 'failed')); } }
-    };
-    try {
-      const ret = source.handler({ action: reqAction, info: reqInfo }, resp);
-      if (ret && typeof ret.then === 'function') {
-        ret.then(d => { if (!done) { done = true; resolve(d); } }).catch(e => { if (!done) { done = true; reject(e); } });
-      }
-    } catch(e) { if (!done) { done = true; reject(e); } }
-    setTimeout(() => { if (!done) { done = true; reject(new Error('timeout')); } }, 15000);
-  });
-}
-
-// 用音源搜索
-async function sourceSearch(keyword, quality = '128k') {
-  for (const [sid, s] of sources) {
-    if (!s.enabled || !s.handler) continue;
-    const srcIds = Object.keys(s.srcList);
-    for (const srcId of srcIds) {
-      try {
-        const result = await callSource(s, 'musicSearch', {
-          keyword, source: srcId, page: 1, limit: 20
-        });
-        if (result && result.list && result.list.length) {
-          return { sourceId: sid, source: s, srcId, results: result.list };
-        }
-      } catch(e) {}
-    }
-  }
-  return null;
-}
-
-// gdstudio API获取flac
-async function gdstudioFlac(songId, quality) {
-  try {
-    const br = quality === 'flac' ? 740 : (quality === '320k' ? 320 : 128);
-    const r = await fetch(`https://music-api.gdstudio.xyz/api.php?use_xbridge3=true&loader_name=forest&need_sec_link=1&sec_link_scene=im&theme=light&types=url&source=netease&id=${songId}&br=${br}`);
-    const d = await r.json();
-    if (d.url && d.size > 0) {
-      console.log('gdstudio OK:', songId, 'br=' + d.br, 'size=' + (d.size/1024/1024).toFixed(1) + 'MB');
-      return d.url;
-    }
-  } catch(e) { console.log('gdstudio error:', e.message); }
-  return null;
-}
 
 // 遍历配置的音乐API获取URL并立即下载
 async function oiapiDownload(title, artist, quality, songId) {
@@ -322,81 +209,6 @@ async function oiapiDownload(title, artist, quality, songId) {
     } catch(e) { console.log(api.name, 'error:', e.message); }
   }
   return null;
-}
-
-// 用音源获取播放链接，获取后立即下载buffer返回（避免URL过期）
-async function sourceGetUrlByPlatform(song, quality) {
-  // 确保用网易云id查：如果不是163平台，先搜163
-  let songId = song.id;
-  let platform = song.platform;
-  if (platform !== '163') {
-    try {
-      const w163 = await search163(song.title + ' ' + (song.artist || ''));
-      if (w163.length) { songId = w163[0].id; platform = '163'; }
-    } catch(e) { console.log('search163 error:', e.message); }
-  }
-  console.log('lookup:', song.title, 'id=' + songId, 'quality=' + quality);
-
-  const trySources = ['kw', 'kg', 'mg', 'wy', 'tx'];
-  for (const srcId of trySources) {
-    for (const [sid, s] of sources) {
-      if (!s.enabled || !s.handler) continue;
-      if (!s.srcList[srcId]) continue;
-      try {
-        const result = await new Promise((resolve, reject) => {
-          let done = false;
-          const resp = {
-            send(d) { if(!done){done=true; resolve(d);} },
-            fail(e) { if(!done){done=true; reject(new Error(e||'failed'));} }
-          };
-          const reqObj = {
-            action: 'musicUrl',
-            source: srcId,
-            info: {
-              musicInfo: {
-                id: String(songId),
-                name: song.title,
-                singer: song.artist || '',
-                types: ['128k', '320k', 'flac'],
-                _types: ['128k', '320k', 'flac']
-              },
-              quality: quality,
-              type: quality
-            }
-          };
-          const ret = s.handler(reqObj, resp);
-          if (ret && typeof ret.then === 'function') {
-            ret.then(d => { if(!done){done=true; resolve(d);} }).catch(e => { if(!done){done=true; reject(e);} });
-          }
-          setTimeout(() => { if(!done){done=true; reject(new Error('timeout'));} }, 15000);
-        });
-        if (result) {
-          const url = typeof result === 'string' ? result : result.url;
-          if (url) {
-            console.log('source OK:', srcId, song.title, 'quality=' + quality);
-            // 立即下载buffer（URL有效期短）
-            try {
-              const buf = await downloadFile(url);
-              if (buf && buf.length > 10000) {
-                return { url, buf, ext: (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (quality === 'flac' ? 'flac' : 'mp3') };
-              }
-              console.log('下载文件太小，试下一个源');
-            } catch(e) { console.log('下载失败:', srcId, e.message); }
-          }
-        }
-      } catch(e) { console.log('source error:', srcId, e.message); }
-    }
-  }
-  console.log('no source found:', song.title);
-  return null;
-}
-
-function restoreSources() {
-  if (!fs.existsSync(SOURCES_FILE)) return;
-  try {
-    const data = JSON.parse(fs.readFileSync(SOURCES_FILE, 'utf8'));
-    for (const item of data) { try { loadSource(item.code, item.name, item.enabled); } catch(e) { console.log('load source error:', item.name, e.message); } }
-  } catch(e) {}
 }
 
 // ===== 搜索：多平台 =====
@@ -507,39 +319,20 @@ app.get('/api/preview', async (req, res) => {
     }
     if (!best || bestScore < 20) return res.status(404).json({ error: 'not found' });
 
-    // 2. 直连oiapi获取URL并立即下载
-    let src = await oiapiDownload(best.title, best.artist, '128k', best.id);
-    if (!src) src = await sourceGetUrlByPlatform(best, '128k');
+    // 2. 通过配置的音乐API获取URL并立即下载
+    const src = await oiapiDownload(best.title, best.artist, '128k', best.id);
     if (src && src.buf) {
       const tmpDir = path.join(DATA_DIR, 'preview');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
       const tmpFile = path.join(tmpDir, Date.now() + '-' + Math.random().toString(36).slice(2) + '.' + src.ext);
       fs.writeFileSync(tmpFile, src.buf);
-      return res.json({ url: '/preview/' + path.basename(tmpFile), title: best.title, artist: best.artist, from: 'source' });
+      return res.json({ url: '/preview/' + path.basename(tmpFile), title: best.title, artist: best.artist });
     }
-    res.status(404).json({ error: '音源无法获取链接', title: best.title, artist: best.artist });
+    res.status(404).json({ error: '未找到可播放资源', title: best.title, artist: best.artist });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== API路由 =====
-app.post('/api/upload-source', (req, res) => {
-  try {
-    const id = loadSource(req.body.code, req.body.filename || '音源');
-    saveSources();
-    res.json({ ok: true, id, filename: req.body.filename });
-  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-app.get('/api/sources', (req, res) => {
-  res.json({ sources: Array.from(sources.entries()).map(([id, s]) => ({ id, name: s.name, enabled: s.enabled })) });
-});
-app.post('/api/sources/:id/toggle', (req, res) => {
-  const s = sources.get(parseInt(req.params.id));
-  if (s) { s.enabled = !s.enabled; saveSources(); res.json({ ok: true, enabled: s.enabled }); }
-  else res.status(404).json({ error: 'not found' });
-});
-app.delete('/api/sources/:id', (req, res) => { sources.delete(parseInt(req.params.id)); saveSources(); res.json({ ok: true }); });
-
 app.get('/api/search', async (req, res) => {
   try { res.json({ results: await searchPlatform(req.query.platform || '163', req.query.keyword) }); }
   catch(e) { res.status(500).json({ error: e.message }); }
@@ -667,46 +460,23 @@ app.delete('/api/playlists/:name', (req, res) => {
 const tasks = new Map();
 let taskId = 0;
 
-// 本地下载：返回302重定向到直链，浏览器直接从源站下载，不消耗服务器流量
-// 本地下载：302重定向到直链，浏览器直接从源站下载，不消耗服务器流量
-app.get('/api/dl', checkAuth, async (req, res) => {
-  try {
-    const { title, artist, id, platform, quality } = req.query;
-    const song = { title: title || '', artist: artist || '', id, platform };
-    const url = await sourceGetUrlByPlatform(song, quality || '320k');
-    if (!url) return res.status(404).send('未找到歌曲链接');
-    res.redirect(url);
-  } catch(e) { res.status(500).send(e.message); }
-});
-
-app.post('/api/local-url', checkAuth, async (req, res) => {
-  try {
-    const { song, quality } = req.body;
-    if (!song) return res.status(400).json({ error: 'song不能为空' });
-    const url = await sourceGetUrlByPlatform(song, quality || '320k');
-    if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
-    res.json({ ok: true, url });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
+// 本地下载：服务端通过配置的音乐API取到音频后直接回传文件
 app.post('/api/local-download', checkAuth, async (req, res) => {
   try {
     const { song, quality } = req.body;
     if (!song) return res.status(400).json({ error: 'song不能为空' });
-    const url = await sourceGetUrlByPlatform(song, quality || '320k');
-    if (!url) return res.status(404).json({ error: '未找到歌曲链接' });
+    const result = await oiapiDownload(song.title || song.name, song.artist || '', quality || '320k', song.id);
+    if (!result || !result.buf) return res.status(404).json({ error: '未找到歌曲链接' });
     const title = (song.title || song.name || 'song').replace(/[\\\/:*?"<>|]/g, '_');
     const artist = (song.artist || '').replace(/[\\\/:*?"<>|]/g, '_');
-    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    const buf = Buffer.from(await r.arrayBuffer());
-    const urlExt = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
-    const filename = encodeURIComponent(title + ' - ' + artist + '.' + urlExt);
+    const filename = encodeURIComponent(title + ' - ' + artist + '.' + result.ext);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
-    res.setHeader('Content-Type', urlExt === 'flac' ? 'audio/flac' : 'audio/mpeg');
-    res.send(buf);
+    res.setHeader('Content-Type', result.ext === 'flac' ? 'audio/flac' : (result.ext === 'ogg' ? 'audio/ogg' : 'audio/mpeg'));
+    res.send(result.buf);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// 批量打包下载zip
 app.post('/api/local-zip', checkAuth, async (req, res) => {
   try {
     const { songs, quality } = req.body;
@@ -719,18 +489,15 @@ app.post('/api/local-zip', checkAuth, async (req, res) => {
     const usedNames = {};
     for (const song of songs) {
       try {
-        const url = await sourceGetUrlByPlatform(song, quality || '320k');
-        if (!url) continue;
-        const urlExt = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
+        const result = await oiapiDownload(song.title || song.name, song.artist || '', quality || '320k', song.id);
+        if (!result || !result.buf) continue;
         let name = ((song.title || song.name) + ' - ' + (song.artist || '')).replace(/[\\\/:*?"<>|]/g, '_') || 'song';
         if (usedNames[name]) { name = name + ' (' + (++usedNames[name]) + ')'; } else { usedNames[name] = 1; }
-        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const buf = Buffer.from(await r.arrayBuffer());
-        archive.append(buf, { name: name + '.' + urlExt });
+        archive.append(result.buf, { name: name + '.' + result.ext });
       } catch(e) { console.log('zip skip:', song.title, e.message); }
     }
     await archive.finalize();
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) { if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/download', requireDownload, async (req, res) => {
@@ -789,21 +556,13 @@ app.post('/api/download', requireDownload, async (req, res) => {
       }
 
       if (bestSong) {
-        items[i].status = '音源获取链接';
+        items[i].status = '获取链接中';
         // 音质降级链：flac -> 320k -> 128k
         const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
         for (const q of qualityChain) {
           if (task.cancelled) return;
           items[i].status = '获取链接(' + q + ')';
-          // 优先直连配置的API
-          let result = await oiapiDownload(bestSong.title, bestSong.artist, q, bestSong.id);
-          if (!result) {
-            // 备用：通过音源JS（整体15秒超时，避免卡死队列）
-            result = await Promise.race([
-              sourceGetUrlByPlatform(bestSong, q),
-              new Promise(r => setTimeout(() => r(null), 15000))
-            ]);
-          }
+          const result = await oiapiDownload(bestSong.title, bestSong.artist, q, bestSong.id);
           if (result && result.buf) {
             musicUrl = result.url;
             items[i].buf = result.buf;
@@ -814,7 +573,7 @@ app.post('/api/download', requireDownload, async (req, res) => {
         }
       }
 
-      if (!musicUrl) { items[i].status = '音源未找到'; task.done++; return; }
+      if (!musicUrl) { items[i].status = '未找到资源'; task.done++; return; }
       try {
         if (dlType === 'local') {
           items[i].url = musicUrl;
@@ -887,6 +646,5 @@ app.post('/api/download/:id/pause', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  restoreSources();
-  console.log(`LX Downloader on ${PORT}, loaded ${sources.size} sources`);
+  console.log(`LX Downloader on ${PORT}, ${(apiConfig.musicApis||[]).length} music APIs configured`);
 });
