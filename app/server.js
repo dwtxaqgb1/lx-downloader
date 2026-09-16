@@ -14,12 +14,16 @@ app.use(express.json({ limit: '50mb' }));
 
 // 认证
 const AUTH_FILE = path.join(DOWNLOAD_DIR, 'auth.json');
+const envUser = process.env.ADMIN_USER;
+const envPass = process.env.ADMIN_PASS;
 let authData = {
-  users: [{ user: 'admin', pass: 'admin', role: 'admin' }],
-  sessions: {}  // token -> user
+  users: [{ user: envUser || 'admin', pass: envPass || 'admin', role: 'admin' }],
+  sessions: {}
 };
 if (fs.existsSync(AUTH_FILE)) {
   try { authData = { ...authData, ...JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')) }; } catch {}
+} else if (envUser && envPass) {
+  saveAuth();
 }
 function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData)); }
 
