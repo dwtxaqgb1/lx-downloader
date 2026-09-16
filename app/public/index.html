@@ -354,6 +354,21 @@ input:checked + .slider:before { transform:translateX(16px); }
       <button class="btn btn-primary btn-sm" onclick="savePlatformConfig(this)" style="margin-top:8px">保存平台配置</button>
     </div>
 
+    <!-- 音乐下载API配置 -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">🎵</span>
+        <h3 style="font-size:15px;color:#58a6ff;margin:0">音乐下载接口</h3>
+      </div>
+      <p class="tip" style="font-size:12px;margin-bottom:8px">
+        按顺序尝试，一个失败自动切下一个。占位符：{kw}=歌名歌手，{id}=歌曲ID，{br}=音质码率。<br>
+        br128/br320/brFlac 分别填各音质对应的码率参数值。
+      </p>
+      <div id="music-api-list"></div>
+      <button class="btn btn-sm" onclick="addMusicApi()" style="margin-top:8px">+ 新增接口</button>
+      <button class="btn btn-primary btn-sm" onclick="saveMusicApis(this)" style="margin-top:8px;margin-left:8px">保存接口配置</button>
+    </div>
+
     <!-- 账号安全 -->
     <div class="card" style="margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
@@ -1043,7 +1058,54 @@ async function openSettings(){
   loadUserList();
   try{var c=await (await fetch('/api/config')).json();
     document.getElementById('cfg-platforms').value = JSON.stringify(c.platforms, null, 2);
+    renderMusicApis(c.musicApis || []);
   }catch(e){}
+}
+function renderMusicApis(apis){
+  var box = document.getElementById('music-api-list');
+  box.innerHTML = '';
+  apis.forEach(function(api, i){
+    var div = document.createElement('div');
+    div.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;margin-bottom:8px';
+    div.innerHTML =
+      '<div style="display:flex;gap:6px;margin-bottom:6px">' +
+        '<input data-k="name" value="'+(api.name||'').replace(/"/g,'&quot;')+'" placeholder="名称" style="flex:1">' +
+        '<button class="btn btn-sm" style="color:#f85149" onclick="this.parentElement.parentElement.remove()">删除</button>' +
+      '</div>' +
+      '<input data-k="url" value="'+(api.url||'').replace(/"/g,'&quot;')+'" placeholder="接口地址，如 https://xxx/api?msg={kw}&br={br}" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:11px;font-family:monospace">' +
+      '<div style="display:flex;gap:6px">' +
+        '<input data-k="br128" value="'+(api.br128||'')+'" placeholder="128k码率" style="width:80px">' +
+        '<input data-k="br320" value="'+(api.br320||'')+'" placeholder="320k码率" style="width:80px">' +
+        '<input data-k="brFlac" value="'+(api.brFlac||'')+'" placeholder="无损码率" style="width:80px">' +
+      '</div>';
+    box.appendChild(div);
+  });
+}
+function addMusicApi(){
+  var box = document.getElementById('music-api-list');
+  var apis = [];
+  box.querySelectorAll('div[style*="border-radius"]').forEach(function(div){
+    var o = {};
+    div.querySelectorAll('[data-k]').forEach(function(inp){ o[inp.dataset.k] = inp.value; });
+    apis.push(o);
+  });
+  apis.push({name:'',url:'',br128:'',br320:'',brFlac:''});
+  renderMusicApis(apis);
+}
+async function saveMusicApis(btn){
+  var box = document.getElementById('music-api-list');
+  var apis = [];
+  box.querySelectorAll('div[style*="border-radius"]').forEach(function(div){
+    var o = {};
+    div.querySelectorAll('[data-k]').forEach(function(inp){ o[inp.dataset.k] = inp.value; });
+    if(o.url) apis.push(o);
+  });
+  var origText = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span>';
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({musicApis:apis})});
+  btn.innerHTML = '✓';
+  setTimeout(function(){ btn.disabled=false; btn.textContent=origText; }, 800);
 }
 async function savePlatformConfig(btn){
   try{

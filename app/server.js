@@ -150,6 +150,11 @@ const CONFIG_FILE = path.join(DATA_DIR, 'api-config.json');
 const PLAYLIST_DIR = path.join(DATA_DIR, 'playlists');
 
 const defaultConfig = {
+  // 音乐下载API列表（按顺序尝试，一个失败自动切下一个）
+  musicApis: [
+    { name: 'oiapi酷我(支持无损)', url: 'https://oiapi.net/api/Kuwo?msg={kw}&n=1&br={br}', br128: 3, br320: 2, brFlac: 1, type: 'kuwo' },
+    { name: 'bugpk网易', url: 'https://api.bugpk.com/api/163_music?type=json&ids={id}', br128: 128, br320: 320, brFlac: 999, type: 'netease' }
+  ],
   platforms: [
     { key:'wy', name:'网易', icon:'🎵', color:'#e60026', api:'https://music.163.com/api/playlist/detail?id={id}', lists:{ '3778678':'热歌','19723756':'飙升','2884035':'新歌','11246304':'流行','991319590':'抖音','60198':'说唱','14028249541':'全球说唱','12225155968':'欧美R&B','71384707':'欧美热歌','3001835560':'ACG动画','60131':'古风','2250011882':'原创','2184521073':'电音','5059661515':'民谣','60192':'古典','8661209031':'乐夏','6688069460':'识曲','12768855486':'合伙人','5453912201':'VIP爱听','7785123708':'VIP新歌','2809513713':'网络','180106':'UK','22406213':'韩国','1200022431':'日本' } },
     { key:'qq', name:'QQ', icon:'🐧', color:'#12b7f5', api:'https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg?topid={id}&format=json&inCharset=utf-8&outCharset=utf-8', lists:{ '26':'热歌','27':'飙升','3':'内地','4':'港台','5':'欧美','6':'韩国','7':'日本','11':'民谣','12':'摇滚','13':'嘻哈','15':'电子','16':'影视' } },
@@ -169,6 +174,7 @@ function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(apiConfig, 
 app.get('/api/config', (req, res) => res.json(apiConfig));
 app.post('/api/config', (req, res) => {
   if (req.body.platforms) apiConfig.platforms = req.body.platforms;
+  if (req.body.musicApis) apiConfig.musicApis = req.body.musicApis;
   saveConfig();
   res.json({ ok: true });
 });
@@ -282,27 +288,39 @@ async function gdstudioFlac(songId, quality) {
   return null;
 }
 
-// 直连oiapi.net获取URL并立即下载（绕过音源JS的延迟）
-async function oiapiDownload(title, artist, quality) {
-  try {
-    const br = quality === 'flac' ? 1 : (quality === '320k' ? 2 : 3);
-    const keyword = encodeURIComponent(title + ' ' + (artist || ''));
-    const r = await fetch(`https://oiapi.net/api/Kuwo?msg=${keyword}&n=1&br=${br}`);
-    const d = await r.json();
-    let url = null;
-    if (d.data && d.data.url) url = d.data.url;
-    if (!url && d.message) {
-      const m = d.message.match(/音乐链接：(\S+)/);
-      if (m) url = m[1];
-    }
-    if (!url) return null;
-    console.log('oiapi URL完整:', url);
-    const buf = await downloadFile(url);
-    if (buf && buf.length > 10000) {
-      const ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
-      return { url, buf, ext };
-    }
-  } catch(e) { console.log('oiapi error:', e.message); }
+// 遍历配置的音乐API获取URL并立即下载
+async function oiapiDownload(title, artist, quality, songId) {
+  const apis = (apiConfig.musicApis || []).filter(a => a && a.url);
+  for (const api of apis) {
+    try {
+      const br = quality === 'flac' ? api.brFlac : (quality === '320k' ? api.br320 : api.br128);
+      const keyword = encodeURIComponent(title + ' ' + (artist || ''));
+      const apiUrl = api.url
+        .replace('{kw}', keyword)
+        .replace('{id}', songId || '')
+        .replace('{br}', br || '');
+      console.log('尝试API:', api.name, apiUrl.substring(0, 100));
+      const r = await fetch(apiUrl, { signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined });
+      const text = await r.text();
+      let d;
+      try { d = JSON.parse(text); } catch { continue; }
+      let url = null;
+      // 兼容多种返回格式
+      if (d.data && d.data.url) url = d.data.url;
+      else if (d.url && typeof d.url === 'string' && d.url.startsWith('http')) url = d.url;
+      else if (d.message) {
+        const m = d.message.match(/音乐链接：(\S+)/);
+        if (m) url = m[1];
+      }
+      if (!url) { console.log(api.name, '无URL'); continue; }
+      console.log(api.name, 'URL:', url.substring(0, 80));
+      const buf = await downloadFile(url);
+      if (buf && buf.length > 10000) {
+        const ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (quality === 'flac' ? 'flac' : 'mp3');
+        return { url, buf, ext };
+      }
+    } catch(e) { console.log(api.name, 'error:', e.message); }
+  }
   return null;
 }
 
@@ -490,7 +508,7 @@ app.get('/api/preview', async (req, res) => {
     if (!best || bestScore < 20) return res.status(404).json({ error: 'not found' });
 
     // 2. 直连oiapi获取URL并立即下载
-    let src = await oiapiDownload(best.title, best.artist, '128k');
+    let src = await oiapiDownload(best.title, best.artist, '128k', best.id);
     if (!src) src = await sourceGetUrlByPlatform(best, '128k');
     if (src && src.buf) {
       const tmpDir = path.join(DATA_DIR, 'preview');
@@ -777,7 +795,7 @@ app.post('/api/download', requireDownload, async (req, res) => {
         for (const q of qualityChain) {
           if (task.cancelled) return;
           // 优先直连oiapi.net（最快，URL不过期）
-          let result = await oiapiDownload(bestSong.title, bestSong.artist, q);
+          let result = await oiapiDownload(bestSong.title, bestSong.artist, q, bestSong.id);
           if (!result) {
             // 备用：通过音源JS
             result = await sourceGetUrlByPlatform(bestSong, q);
