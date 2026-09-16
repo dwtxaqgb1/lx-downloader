@@ -703,7 +703,12 @@ app.post('/api/download', requireDownload, async (req, res) => {
 
       if (bestSong) {
         items[i].status = '音源获取链接';
-        musicUrl = await sourceGetUrlByPlatform(bestSong, quality);
+        // 音质降级链：flac -> 320k -> 128k
+        const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
+        for (const q of qualityChain) {
+          musicUrl = await sourceGetUrlByPlatform(bestSong, q);
+          if (musicUrl) { console.log('using', q); break; }
+        }
       }
 
       if (!musicUrl) { items[i].status = '音源未找到'; task.done++; return; }
