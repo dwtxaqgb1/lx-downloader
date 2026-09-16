@@ -22,7 +22,16 @@ let authData = {
 };
 if (fs.existsSync(AUTH_FILE)) {
   try { authData = { ...authData, ...JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')) }; } catch {}
-} else if (envUser && envPass) {
+}
+// 如果有环境变量，强制同步admin账户（安装向导设置的密码优先）
+if (envUser && envPass) {
+  const admin = authData.users.find(x => x.role === 'admin');
+  if (admin) {
+    admin.user = envUser;
+    admin.pass = envPass;
+  } else {
+    authData.users.push({ user: envUser, pass: envPass, role: 'admin' });
+  }
   saveAuth();
 }
 function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData)); }
