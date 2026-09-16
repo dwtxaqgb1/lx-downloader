@@ -4,6 +4,30 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+async function downloadFile(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? require('https') : require('http');
+    const doGet = (u) => {
+      const req = mod.get(u, { headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.kuwo.cn/'
+      }}, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          return doGet(new URL(res.headers.location, u).href);
+        }
+        if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      req.on('error', reject);
+      req.setTimeout(30000, () => req.destroy(new Error('timeout')));
+    };
+    doGet(url);
+  });
+}
+
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/downloads';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PORT = process.env.PORT || 5200;
@@ -311,18 +335,7 @@ async function sourceGetUrlByPlatform(song, quality) {
         if (result) {
           const url = typeof result === 'string' ? result : result.url;
           if (url) {
-            // 验证URL：GET前2KB检查是否音频
-            try {
-              const probe = await fetch(url, { headers: { Range: 'bytes=0-2047', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuwo.cn/' } });
-              const ct = probe.headers.get('content-type') || '';
-              const buf = Buffer.from(await probe.arrayBuffer());
-              const head = buf.slice(0, 30).toString();
-              if (ct.includes('html') || ct.includes('text') || head.includes('<html') || head.includes('{')) {
-                console.log('source', srcId, '返回非音频，试下一个, ct=' + ct);
-                continue;
-              }
-            } catch(e) { console.log('probe error:', e.message); }
-            console.log('source OK:', srcId, song.title, 'quality=' + quality, 'url=' + (url||'').substring(0,100));
+            console.log('source OK:', srcId, song.title, 'quality=' + quality);
             return url;
           }
         }
@@ -728,62 +741,39 @@ app.post('/api/download', requireDownload, async (req, res) => {
 
       if (bestSong) {
         items[i].status = '音源获取链接';
-        // 音质降级链：flac -> 320k -> 128k
+        // 音质降级链：flac -> 320k -> 128k，每个音质尝试获取URL并下载
         const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
         for (const q of qualityChain) {
-          musicUrl = await sourceGetUrlByPlatform(bestSong, q);
-          if (musicUrl) { items[i].status = '下载中'; break; }
+          const url = await sourceGetUrlByPlatform(bestSong, q);
+          if (!url) continue;
+          items[i].status = '下载中';
+          try {
+            const buf = await downloadFile(url);
+            if (buf && buf.length > 10000) {
+              musicUrl = url;
+              items[i].buf = buf;
+              items[i].ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (q === 'flac' ? 'flac' : 'mp3');
+              break;
+            }
+            console.log('下载文件太小，试下一个音质:', q, buf ? buf.length : 0);
+          } catch(e) { console.log('下载失败:', q, e.message); }
         }
       }
 
       if (!musicUrl) { items[i].status = '音源未找到'; task.done++; return; }
       try {
-        const urlExt = (musicUrl.split('?')[0].match(/\.(\w+)$/) || [])[1] || 'mp3';
         if (dlType === 'local') {
           items[i].url = musicUrl;
-          items[i].filename = `${song.artist || '未知'}-${rawTitle}.${urlExt}`.replace(/[\/\\:*?"<>|]/g, '_');
-          items[i].format = urlExt;
+          items[i].filename = `${song.artist || '未知'}-${rawTitle}.${items[i].ext}`.replace(/[\/\\:*?"<>|]/g, '_');
+          items[i].format = items[i].ext;
           items[i].status = '完成';
         } else {
-          items[i].status = '下载中';
-          const buf = await new Promise((resolve, reject) => {
-            const mod = musicUrl.startsWith('https') ? require('https') : require('http');
-            const req = mod.get(musicUrl, { headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Referer': 'https://www.kuwo.cn/'
-            }}, (res) => {
-              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                const loc = new URL(res.headers.location, musicUrl).href;
-                const r2 = require(loc.startsWith('https') ? 'https' : 'http').get(loc, { headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                  'Referer': 'https://www.kuwo.cn/'
-                }}, (res2) => {
-                  const chunks = [];
-                  res2.on('data', c => chunks.push(c));
-                  res2.on('end', () => resolve(Buffer.concat(chunks)));
-                });
-                r2.on('error', reject);
-                r2.setTimeout(30000, () => r2.destroy(new Error('timeout')));
-                return;
-              }
-              const chunks = [];
-              res.on('data', c => chunks.push(c));
-              res.on('end', () => resolve(Buffer.concat(chunks)));
-            });
-            req.on('error', reject);
-            req.setTimeout(30000, () => req.destroy(new Error('timeout')));
-          });
-          const ct = 'audio/mpeg';
-          let ext = 'mp3';
-          if (urlExt === 'flac' || ct.includes('flac')) ext = 'flac';
-          else if (urlExt === 'wav' || ct.includes('wav')) ext = 'wav';
-          else if (urlExt === 'm4a' || ct.includes('m4a') || ct.includes('mp4')) ext = 'm4a';
-          else if (urlExt === 'ape' || ct.includes('ape')) ext = 'ape';
+          const buf = items[i].buf;
           const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
           const safeName = `${song.artist || '未知'}-${rawTitle}`.replace(/[\/\\:*?"<>|]/g, '_');
-          const filename = safeName + '.' + ext;
+          const filename = safeName + '.' + items[i].ext;
           fs.writeFileSync(path.join(DOWNLOAD_DIR, filename), buf);
-          items[i].format = ext;
+          items[i].format = items[i].ext;
           items[i].sizeMB = sizeMB;
           items[i].status = '完成';
         }
