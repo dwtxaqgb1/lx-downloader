@@ -648,13 +648,11 @@ app.post('/api/download', requireDownload, async (req, res) => {
   const { songs, quality, type } = req.body;
   const dlType = type || 'nas';
   const id = ++taskId;
-  // 去重：已有任务中相同歌曲跳过
+  // 去重：所有任务中相同歌曲跳过（包括已完成的）
   const existing = new Set();
   for (const [, t] of tasks) {
-    if (t.status === 'running' || t.status === 'paused') {
-      for (const it of t.items) {
-        if (it.status !== '完成' && it.status !== '失败') existing.add(it.title + '|' + (it.artist||''));
-      }
+    for (const it of t.items) {
+      existing.add(it.title + '|' + (it.artist||''));
     }
   }
   const newSongs = songs.filter(s => !existing.has((s.title||s.name)+'|'+(s.artist||'')));
