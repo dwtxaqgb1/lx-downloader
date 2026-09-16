@@ -5,15 +5,17 @@ const path = require('path');
 const vm = require('vm');
 
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/downloads';
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PORT = process.env.PORT || 5200;
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // 认证
-const AUTH_FILE = path.join(DOWNLOAD_DIR, 'auth.json');
+const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 const envUser = process.env.ADMIN_USER;
 const envPass = process.env.ADMIN_PASS;
 let authData = {
@@ -122,9 +124,9 @@ app.use(checkAuth);
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store') }));
 
 // ===== 多音源管理 =====
-const SOURCES_FILE = path.join(DOWNLOAD_DIR, 'sources.json');
-const CONFIG_FILE = path.join(DOWNLOAD_DIR, 'api-config.json');
-const PLAYLIST_DIR = path.join(DOWNLOAD_DIR, 'playlists');
+const SOURCES_FILE = path.join(DATA_DIR, 'sources.json');
+const CONFIG_FILE = path.join(DATA_DIR, 'api-config.json');
+const PLAYLIST_DIR = path.join(DATA_DIR, 'playlists');
 
 const defaultConfig = {
   platforms: [
@@ -516,7 +518,7 @@ app.get('/api/toplist', async (req, res) => {
 });
 
 // ===== 下载历史（持久化到服务器） =====
-const HISTORY_FILE = path.join(DOWNLOAD_DIR, 'history.json');
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 let downloadHistory = [];
 if (fs.existsSync(HISTORY_FILE)) {
   try { downloadHistory = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')); } catch {}
