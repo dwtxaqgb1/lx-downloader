@@ -1186,8 +1186,11 @@ async function changeAuth(btn){
   btn.disabled = true;
   btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> 保存中...';
   await fetch('/api/change-auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u||undefined,pass:p||undefined})});
-  btn.innerHTML = '✓ 已保存';
-  setTimeout(function(){ btn.disabled=false; btn.textContent=orig; document.getElementById('cfg-user').value=''; document.getElementById('cfg-pass').value=''; }, 800);
+  btn.innerHTML = '✓ 已保存，即将退出登录';
+  setTimeout(function(){
+    localStorage.removeItem('lx_token');
+    location.reload();
+  }, 1000);
 }
 
 async function loadUserList(){

@@ -33,6 +33,9 @@ if (envUser && envPass) {
     authData.users.push({ user: envUser, pass: envPass, role: 'admin' });
   }
   saveAuth();
+} else if (!fs.existsSync(AUTH_FILE)) {
+  // 没有环境变量且无auth.json，创建默认admin/admin
+  saveAuth();
 }
 function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData)); }
 
