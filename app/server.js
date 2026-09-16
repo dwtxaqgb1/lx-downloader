@@ -300,7 +300,7 @@ async function oiapiDownload(title, artist, quality, songId) {
         .replace('{id}', songId || '')
         .replace('{br}', br || '');
       console.log('尝试API:', api.name, apiUrl.substring(0, 100));
-      const r = await fetch(apiUrl, { signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined });
+      const r = await fetch(apiUrl, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
       const text = await r.text();
       let d;
       try { d = JSON.parse(text); } catch { continue; }
@@ -794,11 +794,15 @@ app.post('/api/download', requireDownload, async (req, res) => {
         const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
         for (const q of qualityChain) {
           if (task.cancelled) return;
-          // 优先直连oiapi.net（最快，URL不过期）
+          items[i].status = '获取链接(' + q + ')';
+          // 优先直连配置的API
           let result = await oiapiDownload(bestSong.title, bestSong.artist, q, bestSong.id);
           if (!result) {
-            // 备用：通过音源JS
-            result = await sourceGetUrlByPlatform(bestSong, q);
+            // 备用：通过音源JS（整体15秒超时，避免卡死队列）
+            result = await Promise.race([
+              sourceGetUrlByPlatform(bestSong, q),
+              new Promise(r => setTimeout(() => r(null), 15000))
+            ]);
           }
           if (result && result.buf) {
             musicUrl = result.url;

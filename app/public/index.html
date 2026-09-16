@@ -862,8 +862,9 @@ function pollStatus(){
   pollTimer=setInterval(async function(){
     if(!currentTaskId) return;
     var r=await fetch('/api/download/'+currentTaskId);
+    if(r.status===404){ clearInterval(pollTimer); currentTaskId=null; return; }
     var t=await r.json();
-    if(!t) return;
+    if(!t || t.total===undefined) return;
     var pct=t.done/t.total*100;
     var stText = t.status==='done'?'全部完成':t.status==='cancelled'?'已取消':'下载中';
     document.getElementById('download-status').innerHTML='<b>'+stText+' '+t.done+'/'+t.total+'</b>';
