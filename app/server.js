@@ -164,19 +164,25 @@ function saveSources() {
 function loadSource(code, filename, enabled = true) {
   const handlers = {};
   const srcList = {};
-  // callback风格request: request(url, opts, (err, resp) => {})
+  // callback风格request: request(url, opts, (err, resp, body) => {})
   function request(url, opts, callback) {
     if (typeof opts === 'function') { callback = opts; opts = {}; }
     opts = opts || {};
-    console.log('lx.request:', url);
     fetch(url, {
-      method: opts.method || 'GET',
+      method: (opts.method || 'GET').toUpperCase(),
       headers: { ...(opts.headers || {}), 'User-Agent': 'Mozilla/5.0' },
       body: opts.body || opts.data
     }).then(async r => {
-      const text = await r.text();
-      if (url.includes('gdstudio')) console.log('gdstudio resp:', text.substring(0, 200));
-      callback(null, { status: r.status, headers: {}, body: text });
+      let text = await r.text();
+      let parsed = text;
+      try { parsed = JSON.parse(text); } catch {}
+      const safeResp = {
+        statusCode: r.status,
+        statusMessage: r.statusText,
+        headers: Object.fromEntries(r.headers),
+        body: parsed
+      };
+      callback(null, safeResp, parsed);
     }).catch(e => callback(e));
   }
   const enProxy = new Proxy({}, { get(t,p){return p;} });
@@ -285,7 +291,13 @@ async function sourceGetUrlByPlatform(song, quality) {
             action: 'musicUrl',
             source: srcId,
             info: {
-              musicInfo: { id: String(songId), name: song.title, singer: song.artist || '' },
+              musicInfo: {
+                id: String(songId),
+                name: song.title,
+                singer: song.artist || '',
+                types: ['128k', '320k', 'flac'],
+                _types: ['128k', '320k', 'flac']
+              },
               quality: quality,
               type: quality
             }
@@ -298,8 +310,21 @@ async function sourceGetUrlByPlatform(song, quality) {
         });
         if (result) {
           const url = typeof result === 'string' ? result : result.url;
-          console.log('source resp:', srcId, song.title, 'quality=' + quality, 'url=' + (url||'').substring(0,80));
-          if (url) { console.log('source OK:', srcId, song.title); return url; }
+          if (url) {
+            // 验证URL：GET前2KB检查是否音频
+            try {
+              const probe = await fetch(url, { headers: { Range: 'bytes=0-2047', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuwo.cn/' } });
+              const ct = probe.headers.get('content-type') || '';
+              const buf = Buffer.from(await probe.arrayBuffer());
+              const head = buf.slice(0, 30).toString();
+              if (ct.includes('html') || ct.includes('text') || head.includes('<html') || head.includes('{')) {
+                console.log('source', srcId, '返回非音频，试下一个, ct=' + ct);
+                continue;
+              }
+            } catch(e) { console.log('probe error:', e.message); }
+            console.log('source OK:', srcId, song.title, 'quality=' + quality, 'url=' + (url||'').substring(0,100));
+            return url;
+          }
         }
       } catch(e) { console.log('source error:', srcId, e.message); }
     }
@@ -707,7 +732,7 @@ app.post('/api/download', requireDownload, async (req, res) => {
         const qualityChain = quality === 'flac' ? ['flac', '320k', '128k'] : (quality === '320k' ? ['320k', '128k'] : ['128k']);
         for (const q of qualityChain) {
           musicUrl = await sourceGetUrlByPlatform(bestSong, q);
-          if (musicUrl) { console.log('using', q); break; }
+          if (musicUrl) { items[i].status = '下载中'; break; }
         }
       }
 
@@ -721,9 +746,34 @@ app.post('/api/download', requireDownload, async (req, res) => {
           items[i].status = '完成';
         } else {
           items[i].status = '下载中';
-          const resp = await fetch(musicUrl);
-          const buf = Buffer.from(await resp.arrayBuffer());
-          const ct = resp.headers.get('content-type') || '';
+          const buf = await new Promise((resolve, reject) => {
+            const mod = musicUrl.startsWith('https') ? require('https') : require('http');
+            const req = mod.get(musicUrl, { headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Referer': 'https://www.kuwo.cn/'
+            }}, (res) => {
+              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                const loc = new URL(res.headers.location, musicUrl).href;
+                const r2 = require(loc.startsWith('https') ? 'https' : 'http').get(loc, { headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Referer': 'https://www.kuwo.cn/'
+                }}, (res2) => {
+                  const chunks = [];
+                  res2.on('data', c => chunks.push(c));
+                  res2.on('end', () => resolve(Buffer.concat(chunks)));
+                });
+                r2.on('error', reject);
+                r2.setTimeout(30000, () => r2.destroy(new Error('timeout')));
+                return;
+              }
+              const chunks = [];
+              res.on('data', c => chunks.push(c));
+              res.on('end', () => resolve(Buffer.concat(chunks)));
+            });
+            req.on('error', reject);
+            req.setTimeout(30000, () => req.destroy(new Error('timeout')));
+          });
+          const ct = 'audio/mpeg';
           let ext = 'mp3';
           if (urlExt === 'flac' || ct.includes('flac')) ext = 'flac';
           else if (urlExt === 'wav' || ct.includes('wav')) ext = 'wav';
@@ -737,7 +787,7 @@ app.post('/api/download', requireDownload, async (req, res) => {
           items[i].sizeMB = sizeMB;
           items[i].status = '完成';
         }
-      } catch(e) { items[i].status = '失败'; }
+      } catch(e) { console.log('download error:', e.message); items[i].status = '失败'; }
       task.done++;
     }
 
