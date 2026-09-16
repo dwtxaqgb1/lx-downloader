@@ -281,7 +281,7 @@ async function sourceGetUrlByPlatform(song, quality) {
             send(d) { if(!done){done=true; resolve(d);} },
             fail(e) { if(!done){done=true; reject(new Error(e||'failed'));} }
           };
-          const ret = s.handler({
+          const reqObj = {
             action: 'musicUrl',
             source: srcId,
             info: {
@@ -289,7 +289,8 @@ async function sourceGetUrlByPlatform(song, quality) {
               quality: quality,
               type: quality
             }
-          }, resp);
+          };
+          const ret = s.handler(reqObj, resp);
           if (ret && typeof ret.then === 'function') {
             ret.then(d => { if(!done){done=true; resolve(d);} }).catch(e => { if(!done){done=true; reject(e);} });
           }
@@ -297,6 +298,7 @@ async function sourceGetUrlByPlatform(song, quality) {
         });
         if (result) {
           const url = typeof result === 'string' ? result : result.url;
+          console.log('source resp:', srcId, song.title, 'quality=' + quality, 'url=' + (url||'').substring(0,80));
           if (url) { console.log('source OK:', srcId, song.title); return url; }
         }
       } catch(e) { console.log('source error:', srcId, e.message); }
