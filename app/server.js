@@ -268,13 +268,7 @@ async function sourceGetUrlByPlatform(song, quality) {
   }
   console.log('lookup:', song.title, 'id=' + songId, 'quality=' + quality);
 
-  // 如果是flac音质，优先直接用gdstudio获取flac
-  if (quality === 'flac') {
-    const flacUrl = await gdstudioFlac(songId, quality);
-    if (flacUrl) return flacUrl;
-  }
-
-  // 优先用音源JS
+  // 只使用上传的JS音源获取播放链接
   const trySources = ['wy', 'tx', 'kw', 'kg', 'mg'];
   for (const srcId of trySources) {
     for (const [sid, s] of sources) {
