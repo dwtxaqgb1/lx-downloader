@@ -24,7 +24,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background:#0f
 .btn-primary { background:#1f6feb; color:#fff; }
 .btn-danger { background:#da3633; color:#fff; }
 .btn-sm { padding:5px 10px; font-size:12px; }
-.song-list { max-height:60vh; overflow-y:auto; }
+.song-list { max-height:60vh; overflow-y:auto; scrollbar-width:none; -ms-overflow-style:none; }
+.song-list::-webkit-scrollbar { display:none; }
 .song-item { display:flex; align-items:center; padding:7px 10px; border-bottom:1px solid #21262d; }
 .song-item:hover { background:#161b22; }
 .song-item .idx { color:#6e7681; width:28px; font-size:12px; }
@@ -115,6 +116,11 @@ input:checked + .slider:before { transform:translateX(16px); }
   #search-row2 { flex-wrap:wrap; }
   #search-row2 select { flex:1; min-width:80px; }
   #search-row2 button { flex:1; min-width:60px; }
+  .song-item { padding:6px 8px; }
+  .song-item .idx { width:24px; font-size:11px; }
+  .song-item .artist { max-width:80px; font-size:11px; margin-left:4px; }
+  .song-item .name { font-size:13px; }
+  .song-item .play-btn { margin-left:4px; min-width:28px; }
 }
 </style>
 </head>
@@ -828,11 +834,10 @@ async function renderHistory(){
     var d=await r.json();
     var hist=d.history||[];
     if(!hist.length){document.getElementById('download-history').innerHTML='<p class="tip">暂无下载记录</p>';return;}
-    document.getElementById('download-history').innerHTML=hist.map(function(h,i){
-      var d=new Date(h.time);
-      var ts=(d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours()+':'+(d.getMinutes()<10?'0':'')+d.getMinutes();
-      var info = (h.format) ? '<span style="margin-left:8px;color:#8b949e;font-size:11px">'+h.format+' · '+h.sizeMB+'MB</span>' : '';
-      return '<div class="song-item"><span class="idx">'+(i+1)+'</span><span class="name">'+esc(h.title)+'</span><span class="artist">'+esc(h.artist)+'</span>'+info+'<span class="tip" style="margin-left:8px">'+ts+'</span><button class="play-btn" data-title="'+esc(h.title)+'" data-artist="'+esc(h.artist)+'">▶</button></div>';
+    document.getElementById('download-history').innerHTML=hist.slice().reverse().map(function(h,i){
+      var num=hist.length-i;
+      var info = (h.format) ? '<span style="margin-left:8px;color:#6e7681;font-size:11px;white-space:nowrap">'+h.format+' · '+h.sizeMB+'MB</span>' : '';
+      return '<div class="song-item"><span class="idx">'+num+'</span><span class="name">'+esc(h.title)+'</span><span class="artist">'+esc(h.artist)+'</span>'+info+'<button class="play-btn" data-title="'+esc(h.title)+'" data-artist="'+esc(h.artist)+'">▶</button></div>';
     }).join('');
   }catch(e){document.getElementById('download-history').innerHTML='<p class="tip">加载失败</p>';}
 }
@@ -1191,7 +1196,7 @@ async function loadUserList(){
     var d = await r.json();
     document.getElementById('user-list').innerHTML = (d.users||[]).map(function(u){
       var tag = u.role==='admin'?'管理员':'访客';
-      var dlSwitch = u.role==='admin'?'':'<label style="margin-left:8px;font-size:12px;cursor:pointer"><input type="checkbox" '+(u.canDownload?'checked':'')+' onchange="toggleDl(\''+u.user+'\',this.checked)"> 允许下载</label>';
+      var dlSwitch = u.role==='admin'?'':'';
       var del = u.role==='admin'?'':'<button class="btn btn-danger btn-sm" style="margin-left:8px;padding:2px 8px" onclick="delUser(\''+u.user+'\')">删除</button>';
       return '<div style="padding:6px 0;border-bottom:1px solid #21262d;font-size:13px">'+esc(u.user)+' <span style="color:#8b949e;font-size:12px">'+tag+'</span>'+dlSwitch+del+'</div>';
     }).join('');

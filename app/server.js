@@ -103,7 +103,7 @@ app.delete('/api/users/:user', checkAuth, requireAdmin, (req, res) => {
 });
 
 app.use(checkAuth);
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store') }));
 
 // ===== 多音源管理 =====
 const SOURCES_FILE = path.join(DOWNLOAD_DIR, 'sources.json');
