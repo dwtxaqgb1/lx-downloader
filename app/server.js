@@ -303,6 +303,12 @@ async function sourceGetUrlByPlatform(song, quality) {
     }
   }
 
+  // JS音源未找到时，flac音质fallback到gdstudio
+  if (quality === 'flac') {
+    const flacUrl = await gdstudioFlac(songId, quality);
+    if (flacUrl) { console.log('gdstudio fallback OK:', song.title); return flacUrl; }
+  }
+
   console.log('no source found:', song.title);
   return null;
 }
