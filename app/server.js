@@ -2,6 +2,23 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+
+// ffmpeg转码：输入buffer，输出指定格式buffer
+function transcode(buf, outFmt, bitrate) {
+  return new Promise((resolve, reject) => {
+    const args = ['-i', 'pipe:0'];
+    if (outFmt === 'mp3') args.push('-b:a', bitrate || '320k');
+    args.push('-f', outFmt, 'pipe:1');
+    const p = execFile('ffmpeg', args, { maxBuffer: 200 * 1024 * 1024, timeout: 120000 }, (err, out) => {
+      if (err) return reject(err);
+      if (!out || out.length < 1000) return reject(new Error('转码输出为空'));
+      resolve(out);
+    });
+    p.stdin.end(buf);
+    p.stderr && p.stderr.resume();
+  });
+}
 
 async function downloadFile(url) {
   const controller = new AbortController();
@@ -176,7 +193,8 @@ app.post('/api/config', (req, res) => {
 if (!fs.existsSync(PLAYLIST_DIR)) fs.mkdirSync(PLAYLIST_DIR, { recursive: true });
 
 // 遍历配置的音乐API获取URL并立即下载
-async function oiapiDownload(title, artist, quality, songId) {
+// convert=true 时把有损ogg统一转成mp3、无损保留flac；convert=false(试听)保留原始格式
+async function oiapiDownload(title, artist, quality, songId, convert = true) {
   const apis = (apiConfig.musicApis || []).filter(a => a && a.url);
   for (const api of apis) {
     try {
@@ -201,11 +219,26 @@ async function oiapiDownload(title, artist, quality, songId) {
       }
       if (!url) { console.log(api.name, '无URL'); continue; }
       console.log(api.name, 'URL:', url.substring(0, 80));
-      const buf = await downloadFile(url);
-      if (buf && buf.length > 10000) {
-        const ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (quality === 'flac' ? 'flac' : 'mp3');
-        return { url, buf, ext };
+      let buf = await downloadFile(url);
+      if (!buf || buf.length < 10000) continue;
+      let ext = (url.split('?')[0].match(/\.(\w+)$/) || [])[1] || (quality === 'flac' ? 'flac' : 'mp3');
+      ext = ext.toLowerCase();
+      // 格式归一化：无损要flac；有损把ogg/其他转mp3
+      if (convert) {
+        if (quality === 'flac' && ext === 'flac') {
+          // 真无损，保留
+        } else if (ext === 'mp3') {
+          // 已是mp3
+        } else if (ext === 'ogg' || ext === 'm4a' || ext === 'aac' || (quality !== 'flac' && ext !== 'flac')) {
+          try {
+            const bitrate = quality === '128k' ? '128k' : '320k';
+            console.log('转码', ext, '-> mp3', bitrate);
+            buf = await transcode(buf, 'mp3', bitrate);
+            ext = 'mp3';
+          } catch(e) { console.log('转码失败，保留原格式:', e.message); }
+        }
       }
+      return { url, buf, ext };
     } catch(e) { console.log(api.name, 'error:', e.message); }
   }
   return null;
@@ -319,8 +352,8 @@ app.get('/api/preview', async (req, res) => {
     }
     if (!best || bestScore < 20) return res.status(404).json({ error: 'not found' });
 
-    // 2. 通过配置的音乐API获取URL并立即下载
-    const src = await oiapiDownload(best.title, best.artist, '128k', best.id);
+    // 2. 通过配置的音乐API获取URL并立即下载（试听不转码，浏览器可直接播放ogg）
+    const src = await oiapiDownload(best.title, best.artist, '128k', best.id, false);
     if (src && src.buf) {
       const tmpDir = path.join(DATA_DIR, 'preview');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
